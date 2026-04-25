@@ -411,9 +411,10 @@ export default class ImageEnlargePlugin extends Plugin {
 
     const container = document.createElement('div');
     // The container must be in the DOM for Mermaid/MathJax post-processing to run.
-    container.style.position = 'fixed';
-    container.style.left = '-99999px';
-    container.style.top = '0';
+    // Use visibility:hidden (not display:none / off-screen) so layout still happens —
+    // some renderers measure boxes before drawing.
+    container.style.cssText = 'position:fixed; top:0; left:0; width:800px; ' +
+      'visibility:hidden; pointer-events:none; z-index:-1';
     document.body.appendChild(container);
 
     try {
@@ -646,13 +647,35 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
       'line-height:1.45; white-space:pre-wrap; overflow-x:auto; color:#24292e'
     );
   });
-  // Inline code (not inside <pre>)
+  // Inline code (not inside <pre>) — Google Docs strips <code>, so wrap in <span>
   root.querySelectorAll('code').forEach((code) => {
     if (code.closest('pre')) return;
-    setStyle(code as HTMLElement,
+    const span = document.createElement('span');
+    span.innerHTML = code.innerHTML;
+    span.setAttribute('style',
       'background:#f6f8fa; padding:2px 6px; border-radius:4px; ' +
       'font-family:Menlo, Consolas, "Courier New", monospace; font-size:0.9em; color:#d6336c'
     );
+    code.replaceWith(span);
+  });
+
+  // Lists — explicit padding so nested levels are visibly indented in Docs / Gmail
+  root.querySelectorAll('ul, ol').forEach((list) => {
+    setStyle(list as HTMLElement, 'margin:4px 0; padding-left:28px');
+  });
+  root.querySelectorAll('ul ul, ol ol, ul ol, ol ul').forEach((list) => {
+    setStyle(list as HTMLElement, 'margin:2px 0; padding-left:28px');
+  });
+  root.querySelectorAll('li').forEach((li) => {
+    setStyle(li as HTMLElement, 'margin:2px 0');
+  });
+
+  // Footnotes — Obsidian renders these into <section class="footnotes"> at the end
+  root.querySelectorAll<HTMLElement>('section.footnotes, .footnotes').forEach((sec) => {
+    setStyle(sec, 'margin-top:24px; padding-top:12px; border-top:1px solid #d0d7de; font-size:0.9em; color:#586069');
+  });
+  root.querySelectorAll<HTMLElement>('sup, .footnote-ref').forEach((sup) => {
+    setStyle(sup, 'font-size:0.75em; vertical-align:super; line-height:0');
   });
 
   // Highlights (==text== → <mark>)
@@ -718,22 +741,45 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
 }
 
 async function waitForAsyncRenders(container: HTMLElement): Promise<void> {
-  // Poll for Mermaid / MathJax / similar async renderers up to ~1.5s total.
-  // We consider the DOM "settled" when no <code class="language-mermaid"> remains
-  // unrendered AND two consecutive frames see the same SVG count.
-  const deadline = Date.now() + 1500;
-  let lastSvgCount = -1;
+  // Poll for Mermaid / MathJax / similar async renderers up to ~2.5s total.
+  // We consider the DOM "settled" when no unrendered placeholder remains AND
+  // two consecutive samples see the same SVG / mjx-container count.
+  const deadline = Date.now() + 2500;
+  let lastCount = -1;
+  let stableTicks = 0;
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 100));
     const pendingMermaid = container.querySelector('code.language-mermaid');
-    const svgCount = container.querySelectorAll('svg').length;
-    if (!pendingMermaid && svgCount === lastSvgCount && svgCount > 0) return;
-    if (!pendingMermaid && svgCount === 0 && lastSvgCount === 0) return;
-    lastSvgCount = svgCount;
+    const pendingMath = container.querySelector('.math, code.language-math');
+    const count = container.querySelectorAll('svg, mjx-container').length;
+    if (!pendingMermaid && !pendingMath) {
+      if (count === lastCount) {
+        stableTicks++;
+        if (stableTicks >= 2) return;
+      } else {
+        stableTicks = 0;
+      }
+    }
+    lastCount = count;
   }
 }
 
 function convertSvgToImg(root: HTMLElement): void {
+  // MathJax produces <mjx-container><svg/></mjx-container>. Extract the inner svg
+  // first so the wrapping <mjx-container> (which Docs strips entirely) goes away.
+  root.querySelectorAll('mjx-container').forEach((mjx) => {
+    const svg = mjx.querySelector('svg');
+    if (svg) {
+      const isInline = (mjx as HTMLElement).getAttribute('display') !== 'true';
+      const wrapper = document.createElement(isInline ? 'span' : 'div');
+      if (!isInline) wrapper.setAttribute('style', 'text-align:center; margin:8px 0');
+      wrapper.appendChild(svg);
+      mjx.replaceWith(wrapper);
+    } else {
+      mjx.remove();
+    }
+  });
+
   const svgs = Array.from(root.querySelectorAll<SVGSVGElement>('svg'));
   for (const svg of svgs) {
     try {
