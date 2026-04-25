@@ -409,64 +409,59 @@ export default class ImageEnlargePlugin extends Plugin {
     }
     const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
 
-    const container = document.createElement('div');
-    // The container must be in the DOM for Mermaid/MathJax post-processing to run.
-    // Use visibility:hidden (not display:none / off-screen) so layout still happens —
-    // some renderers measure boxes before drawing.
-    container.style.cssText = 'position:fixed; top:0; left:0; width:800px; ' +
-      'visibility:hidden; pointer-events:none; z-index:-1';
-    document.body.appendChild(container);
+    // Build the HTML blob asynchronously, but pass it as a Promise to ClipboardItem
+    // so the browser preserves the user-gesture window across our async work
+    // (rendering + Mermaid wait + SVG rasterization can easily exceed 1s).
+    const htmlPromise: Promise<Blob> = (async () => {
+      const container = document.createElement('div');
+      container.style.cssText = 'position:fixed; top:0; left:0; width:800px; ' +
+        'visibility:hidden; pointer-events:none; z-index:-1';
+      document.body.appendChild(container);
 
-    try {
-      await MarkdownRenderer.render(this.app, selection, container, sourcePath, this);
-      // Wait for async post-processors (Mermaid, MathJax, Dataview, etc.) to finish.
-      await waitForAsyncRenders(container);
-    } catch (err) {
-      console.error('MarkdownRenderer failed', err);
-      new Notice('Failed to render markdown');
-      container.remove();
-      return;
-    }
+      try {
+        await MarkdownRenderer.render(this.app, selection, container, sourcePath, this);
+        await waitForAsyncRenders(container);
 
-    // Strip Obsidian-internal UI elements that shouldn't be in clipboard HTML
-    container.querySelectorAll('.copy-code-button, .frontmatter, .frontmatter-container, .edit-block-button').forEach((el) => el.remove());
+        container.querySelectorAll('.copy-code-button, .frontmatter, .frontmatter-container, .edit-block-button').forEach((el) => el.remove());
+        await convertSvgToImg(container);
+        inlineStyleForExternalPaste(container);
 
-    // Rasterize <svg> (Mermaid diagrams, MathJax) into PNG <img>.
-    // Google Docs / Gmail strip <svg> on paste, and many also reject
-    // data:image/svg+xml URLs — PNG raster always works.
-    await convertSvgToImg(container);
+        const imgs = Array.from(container.querySelectorAll('img'));
+        await Promise.all(imgs.map(async (img) => {
+          const src = img.getAttribute('src');
+          if (!src || src.startsWith('data:')) return;
+          const dataUrl = await fetchAsDataUrl(src);
+          if (dataUrl) {
+            img.setAttribute('src', dataUrl);
+            img.removeAttribute('srcset');
+          }
+        }));
 
-    // Google Docs / Gmail strip CSS classes — apply inline styles for code, callouts,
-    // highlights, blockquotes, tables so formatting survives the paste.
-    inlineStyleForExternalPaste(container);
-
-    const imgs = Array.from(container.querySelectorAll('img'));
-    await Promise.all(imgs.map(async (img) => {
-      const src = img.getAttribute('src');
-      if (!src || src.startsWith('data:')) return;
-      const dataUrl = await fetchAsDataUrl(src);
-      if (dataUrl) {
-        img.setAttribute('src', dataUrl);
-        img.removeAttribute('srcset');
-      } else {
-        new Notice(`Could not embed image: ${src.split('/').pop() ?? src}`);
+        const html = `<div>${container.innerHTML}</div>`;
+        return new Blob([html], { type: 'text/html' });
+      } finally {
+        container.remove();
       }
-    }));
+    })();
 
-    const html = `<div>${container.innerHTML}</div>`;
-    container.remove();
+    const textBlob = new Blob([selection], { type: 'text/plain' });
 
     try {
       await navigator.clipboard.write([
         new ClipboardItem({
-          'text/html': new Blob([html], { type: 'text/html' }),
-          'text/plain': new Blob([selection], { type: 'text/plain' }),
+          'text/html': htmlPromise,
+          'text/plain': textBlob,
         }),
       ]);
       new Notice('Copied as HTML with embedded images');
     } catch (err) {
       console.error('Clipboard write failed', err);
-      new Notice('Failed to copy');
+      try {
+        await navigator.clipboard.writeText(selection);
+        new Notice('Copy failed — wrote plain text instead');
+      } catch {
+        new Notice('Failed to copy');
+      }
     }
   }
 
