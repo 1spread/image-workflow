@@ -47,6 +47,26 @@ export default class ImageEnlargePlugin extends Plugin {
     this.openOverlay(img.src);
   };
 
+  private handlePaste = (evt: ClipboardEvent) => {
+    const target = evt.target as HTMLElement | null;
+    if (!target || !target.closest(`.workspace-leaf-content[data-type='markdown']`)) return;
+
+    const data = evt.clipboardData;
+    if (!data) return;
+    const html = data.getData('text/html');
+    const text = data.getData('text/plain');
+    if (!html || !text) return;
+
+    // Only override when HTML carries data: image URLs (i.e. we — or a similar tool —
+    // wrote a rich version). For ordinary HTML pastes, let Obsidian handle it normally.
+    if (!/<img\b[^>]*\bsrc=["']data:image\//i.test(html)) return;
+
+    evt.preventDefault();
+    evt.stopPropagation();
+    // Insert the plain-text (original markdown) version instead.
+    document.execCommand('insertText', false, text);
+  };
+
   private handleCopy = (evt: ClipboardEvent) => {
     const target = evt.target as HTMLElement | null;
     // Only intercept copies originating from a markdown leaf
@@ -68,6 +88,7 @@ export default class ImageEnlargePlugin extends Plugin {
     // capture: true — Obsidian/CM6 の stopPropagation より先に発火
     this.registerDomEvent(document, 'click', this.handleImageClick, true);
     this.registerDomEvent(document, 'copy', this.handleCopy, true);
+    this.registerDomEvent(document, 'paste', this.handlePaste, true);
   }
 
   onunload() {
