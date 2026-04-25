@@ -414,8 +414,13 @@ export default class ImageEnlargePlugin extends Plugin {
     // (rendering + Mermaid wait + SVG rasterization can easily exceed 1s).
     const htmlPromise: Promise<Blob> = (async () => {
       const container = document.createElement('div');
+      // opacity:0 (not visibility:hidden) — Mermaid/MathJax post-processors skip
+      // elements they consider "invisible". opacity:0 keeps them processable.
+      // Place inside an existing markdown leaf if possible so plugin selectors
+      // that scope to .markdown-preview-view / .workspace-leaf still match.
+      container.classList.add('markdown-preview-view', 'markdown-rendered');
       container.style.cssText = 'position:fixed; top:0; left:0; width:800px; ' +
-        'visibility:hidden; pointer-events:none; z-index:-1';
+        'height:auto; opacity:0; pointer-events:none; z-index:-1; overflow:visible';
       document.body.appendChild(container);
 
       try {
@@ -737,16 +742,21 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
 }
 
 async function waitForAsyncRenders(container: HTMLElement): Promise<void> {
-  // Poll for Mermaid / MathJax / similar async renderers up to ~2.5s total.
+  // Try to trigger Mermaid manually if the global is available and unrendered
+  // mermaid blocks remain. Obsidian bundles mermaid; calling its run() is the
+  // most reliable way to force render off-screen.
+  await tryRunMermaid(container);
+
+  // Poll for Mermaid / MathJax / similar async renderers up to ~3s total.
   // We consider the DOM "settled" when no unrendered placeholder remains AND
   // two consecutive samples see the same SVG / mjx-container count.
-  const deadline = Date.now() + 2500;
+  const deadline = Date.now() + 3000;
   let lastCount = -1;
   let stableTicks = 0;
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 100));
-    const pendingMermaid = container.querySelector('code.language-mermaid');
-    const pendingMath = container.querySelector('.math, code.language-math');
+    await new Promise((r) => setTimeout(r, 120));
+    const pendingMermaid = container.querySelector('code.language-mermaid, pre.language-mermaid, .mermaid:not([data-processed])');
+    const pendingMath = container.querySelector('.math:not(.is-loaded), code.language-math');
     const count = container.querySelectorAll('svg, mjx-container').length;
     if (!pendingMermaid && !pendingMath) {
       if (count === lastCount) {
@@ -757,6 +767,39 @@ async function waitForAsyncRenders(container: HTMLElement): Promise<void> {
       }
     }
     lastCount = count;
+    // Re-attempt Mermaid in case more code blocks appeared
+    if (pendingMermaid) await tryRunMermaid(container);
+  }
+}
+
+async function tryRunMermaid(container: HTMLElement): Promise<void> {
+  // Mermaid is exposed on window in Obsidian. Try common APIs.
+  const w = window as unknown as { mermaid?: { run?: (opts?: { nodes?: NodeListOf<Element> | Element[] }) => Promise<unknown>; init?: (config?: unknown, nodes?: NodeListOf<Element> | string) => void } };
+  const mermaid = w.mermaid;
+  if (!mermaid) return;
+
+  // Find unrendered mermaid blocks. Obsidian usually wraps with <pre class="language-mermaid"><code>...</code></pre>
+  const codeBlocks = Array.from(container.querySelectorAll<HTMLElement>('code.language-mermaid, pre.language-mermaid'));
+  if (codeBlocks.length === 0) return;
+
+  // Convert each block to a <div class="mermaid">code</div> that mermaid.run can consume
+  for (const block of codeBlocks) {
+    const code = block.tagName === 'PRE' ? block.querySelector('code')?.textContent ?? block.textContent ?? '' : block.textContent ?? '';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'mermaid';
+    wrapper.textContent = code;
+    const target = block.tagName === 'PRE' ? block : block.parentElement || block;
+    target.replaceWith(wrapper);
+  }
+
+  try {
+    if (typeof mermaid.run === 'function') {
+      await mermaid.run({ nodes: container.querySelectorAll('.mermaid') });
+    } else if (typeof mermaid.init === 'function') {
+      mermaid.init(undefined, container.querySelectorAll('.mermaid'));
+    }
+  } catch (err) {
+    console.error('Manual mermaid render failed', err);
   }
 }
 
