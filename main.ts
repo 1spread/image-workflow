@@ -106,9 +106,23 @@ export default class ImageEnlargePlugin extends Plugin {
   private openOverlay(src: string) {
     if (this.overlayEl) return;
 
+    const { overlay, imgView, copyBtn, downloadBtn, copyPathBtn } = this.buildOverlayDom(src);
+    this.overlayEl = overlay;
+    document.body.appendChild(overlay);
+    this.fitImageWhenReady(imgView);
+
+    const controller = new AbortController();
+    this.overlayAbortController = controller;
+    const { signal } = controller;
+
+    this.attachOverlayMouseHandlers(overlay, imgView, signal);
+    this.attachOverlayButtonHandlers({ copyBtn, downloadBtn, copyPathBtn, imgView, src, signal });
+    this.registerOverlayKeymap(imgView, src);
+  }
+
+  private buildOverlayDom(src: string) {
     const overlay = document.createElement('div');
     overlay.addClass('image-workflow-overlay');
-    this.overlayEl = overlay;
 
     const imgView = document.createElement('img');
     imgView.addClass('image-workflow-view');
@@ -117,25 +131,23 @@ export default class ImageEnlargePlugin extends Plugin {
     const btnGroup = document.createElement('div');
     btnGroup.addClass('image-workflow-btn-group');
 
-    const copyBtn = document.createElement('button');
-    copyBtn.addClass('image-workflow-btn');
-    copyBtn.textContent = 'Copy';
+    const make = (label: string) => {
+      const btn = document.createElement('button');
+      btn.addClass('image-workflow-btn');
+      btn.textContent = label;
+      btnGroup.appendChild(btn);
+      return btn;
+    };
+    const copyBtn = make('Copy');
+    const downloadBtn = make('Download');
+    const copyPathBtn = make('Copy Path');
 
-    const downloadBtn = document.createElement('button');
-    downloadBtn.addClass('image-workflow-btn');
-    downloadBtn.textContent = 'Download';
-
-    const copyPathBtn = document.createElement('button');
-    copyPathBtn.addClass('image-workflow-btn');
-    copyPathBtn.textContent = 'Copy Path';
-
-    btnGroup.appendChild(copyBtn);
-    btnGroup.appendChild(downloadBtn);
-    btnGroup.appendChild(copyPathBtn);
     overlay.appendChild(imgView);
     overlay.appendChild(btnGroup);
-    document.body.appendChild(overlay);
+    return { overlay, imgView, copyBtn, downloadBtn, copyPathBtn };
+  }
 
+  private fitImageWhenReady(imgView: HTMLImageElement) {
     if (imgView.complete && imgView.naturalWidth > 0) {
       this.calculateFitSize(imgView);
     } else {
@@ -144,40 +156,16 @@ export default class ImageEnlargePlugin extends Plugin {
         this.calculateFitSize(imgView);
       };
     }
+  }
 
-    const controller = new AbortController();
-    this.overlayAbortController = controller;
-    const { signal } = controller;
-
+  private attachOverlayMouseHandlers(overlay: HTMLDivElement, imgView: HTMLImageElement, signal: AbortSignal) {
     imgView.addEventListener('dragstart', (e) => e.preventDefault(), { signal });
-
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) this.closeOverlay();
     }, { signal });
-
-    this.overlayScope = new Scope();
-    this.overlayScope.register(null, 'Escape', () => {
-      this.closeOverlay();
-      return false;
-    });
-    this.overlayScope.register(['Mod'], 'c', () => {
-      this.copyImageToClipboard(imgView);
-      return false;
-    });
-    this.overlayScope.register(['Mod', 'Shift'], 'c', () => {
-      this.copyImagePath(src);
-      return false;
-    });
-    this.overlayScope.register(['Mod'], 's', () => {
-      this.downloadImage(src);
-      return false;
-    });
-    this.app.keymap.pushScope(this.overlayScope);
-
     imgView.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const zoomIn = e.deltaY < 0;
-      const ratio = zoomIn ? 0.1 : -0.1;
+      const ratio = e.deltaY < 0 ? 0.1 : -0.1;
       const rect = imgView.getBoundingClientRect();
       const offsetX = e.clientX - rect.left;
       const offsetY = e.clientY - rect.top;
@@ -188,21 +176,39 @@ export default class ImageEnlargePlugin extends Plugin {
         this.applyTransform(imgView);
       });
     }, { signal });
+  }
 
+  private attachOverlayButtonHandlers(opts: {
+    copyBtn: HTMLButtonElement;
+    downloadBtn: HTMLButtonElement;
+    copyPathBtn: HTMLButtonElement;
+    imgView: HTMLImageElement;
+    src: string;
+    signal: AbortSignal;
+  }) {
+    const { copyBtn, downloadBtn, copyPathBtn, imgView, src, signal } = opts;
     copyBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.copyImageToClipboard(imgView);
     }, { signal });
-
     downloadBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.downloadImage(src);
     }, { signal });
-
     copyPathBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.copyImagePath(src);
     }, { signal });
+  }
+
+  private registerOverlayKeymap(imgView: HTMLImageElement, src: string) {
+    const scope = new Scope();
+    scope.register(null, 'Escape', () => { this.closeOverlay(); return false; });
+    scope.register(['Mod'], 'c', () => { this.copyImageToClipboard(imgView); return false; });
+    scope.register(['Mod', 'Shift'], 'c', () => { this.copyImagePath(src); return false; });
+    scope.register(['Mod'], 's', () => { this.downloadImage(src); return false; });
+    this.overlayScope = scope;
+    this.app.keymap.pushScope(scope);
   }
 
   private calculateFitSize(imgView: HTMLImageElement) {
@@ -409,54 +415,15 @@ export default class ImageEnlargePlugin extends Plugin {
     }
     const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
 
-    // Build the HTML blob asynchronously, but pass it as a Promise to ClipboardItem
-    // so the browser preserves the user-gesture window across our async work
-    // (rendering + Mermaid wait + SVG rasterization can easily exceed 1s).
-    const htmlPromise: Promise<Blob> = (async () => {
-      const container = document.createElement('div');
-      // opacity:0 (not visibility:hidden) — Mermaid/MathJax post-processors skip
-      // elements they consider "invisible". opacity:0 keeps them processable.
-      // Place inside an existing markdown leaf if possible so plugin selectors
-      // that scope to .markdown-preview-view / .workspace-leaf still match.
-      container.classList.add('markdown-preview-view', 'markdown-rendered');
-      container.style.cssText = 'position:fixed; top:0; left:0; width:800px; ' +
-        'height:auto; opacity:0; pointer-events:none; z-index:-1; overflow:visible';
-      document.body.appendChild(container);
-
-      try {
-        await MarkdownRenderer.render(this.app, selection, container, sourcePath, this);
-        await waitForAsyncRenders(container);
-
-        container.querySelectorAll('.copy-code-button, .frontmatter, .frontmatter-container, .edit-block-button').forEach((el) => el.remove());
-        await convertSvgToImg(container);
-        inlineStyleForExternalPaste(container);
-
-        const imgs = Array.from(container.querySelectorAll('img'));
-        await Promise.all(imgs.map(async (img) => {
-          const src = img.getAttribute('src');
-          if (!src || src.startsWith('data:')) return;
-          const dataUrl = await fetchAsDataUrl(src);
-          if (dataUrl) {
-            img.setAttribute('src', dataUrl);
-            img.removeAttribute('srcset');
-          }
-        }));
-
-        const html = `<div>${container.innerHTML}</div>`;
-        return new Blob([html], { type: 'text/html' });
-      } finally {
-        container.remove();
-      }
-    })();
-
+    // Pass HTML as a Promise<Blob> so the browser preserves the user-gesture
+    // window across our async work (rendering + Mermaid wait + SVG raster can
+    // easily exceed 1s).
+    const htmlPromise = this.renderSelectionToHtmlBlob(selection, sourcePath);
     const textBlob = new Blob([selection], { type: 'text/plain' });
 
     try {
       await navigator.clipboard.write([
-        new ClipboardItem({
-          'text/html': htmlPromise,
-          'text/plain': textBlob,
-        }),
+        new ClipboardItem({ 'text/html': htmlPromise, 'text/plain': textBlob }),
       ]);
       new Notice('Copied as HTML with embedded images');
     } catch (err) {
@@ -467,6 +434,31 @@ export default class ImageEnlargePlugin extends Plugin {
       } catch {
         new Notice('Failed to copy');
       }
+    }
+  }
+
+  private async renderSelectionToHtmlBlob(selection: string, sourcePath: string): Promise<Blob> {
+    const container = document.createElement('div');
+    // opacity:0 (not visibility:hidden) — Mermaid/MathJax post-processors skip
+    // elements they consider "invisible". opacity:0 keeps them processable.
+    container.classList.add('markdown-preview-view', 'markdown-rendered');
+    container.style.cssText = 'position:fixed; top:0; left:0; width:800px; ' +
+      'height:auto; opacity:0; pointer-events:none; z-index:-1; overflow:visible';
+    document.body.appendChild(container);
+
+    try {
+      await MarkdownRenderer.render(this.app, selection, container, sourcePath, this);
+      await waitForAsyncRenders(container);
+
+      container.querySelectorAll('.copy-code-button, .frontmatter, .frontmatter-container, .edit-block-button').forEach((el) => el.remove());
+      await convertSvgToImg(container);
+      inlineStyleForExternalPaste(container);
+      await embedRemoteImages(container);
+
+      const html = `<div>${container.innerHTML}</div>`;
+      return new Blob([html], { type: 'text/html' });
+    } finally {
+      container.remove();
     }
   }
 
@@ -566,6 +558,7 @@ export default class ImageEnlargePlugin extends Plugin {
       return `data:${mime};base64,${arrayBufferToBase64(buf)}`;
     } catch (err) {
       console.error('Failed to read vault image', err);
+      new Notice(`Could not embed image: ${file.name}`);
       return null;
     }
   }
@@ -639,17 +632,27 @@ function setStyle(el: HTMLElement, css: string): void {
 }
 
 function inlineStyleForExternalPaste(root: HTMLElement): void {
-  // Code blocks (pre > code) — Google Docs is fragile with nested <pre>/<code>
-  // and syntax-highlight <span>s; flatten to a single block of plain text and
-  // wrap in a single-cell <table>, which Docs reliably renders as a code-block-
-  // shaped box that preserves newlines and indentation.
+  styleCodeBlocks(root);
+  styleInlineCode(root);
+  styleLists(root);
+  styleFootnotes(root);
+  styleHighlights(root);
+  styleBlockquotes(root);
+  styleCallouts(root);
+  styleTables(root);
+  styleHorizontalRules(root);
+  styleHeadings(root);
+  replaceTaskCheckboxes(root);
+}
+
+// Code blocks: flatten to a single-cell <table> with plain text, since Docs is
+// unreliable with <pre>/<code> + syntax-highlight <span>s.
+function styleCodeBlocks(root: HTMLElement): void {
   root.querySelectorAll('pre').forEach((pre) => {
     const codeEl = pre.querySelector('code');
-    // Use innerText to capture visual newlines; fall back to textContent.
     const raw = ((codeEl ?? pre) as HTMLElement).innerText
       || (codeEl ?? pre).textContent
       || '';
-    // Drop any leading/trailing blank line from highlighter wrapping.
     const text = raw.replace(/^\n+|\n+$/g, '');
 
     const table = document.createElement('table');
@@ -666,8 +669,6 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
       'white-space:pre-wrap; word-break:break-word; ' +
       'border:1px solid #e1e4e8'
     );
-    // Preserve newlines as <br> so Docs respects line breaks even if it
-    // strips white-space:pre. Tabs get rendered as 4 spaces.
     const lines = text.split('\n');
     lines.forEach((line, i) => {
       const span = document.createElement('span');
@@ -679,7 +680,10 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
     table.appendChild(tr);
     pre.replaceWith(table);
   });
-  // Inline code (not inside <pre>) — Google Docs strips <code>, so wrap in <span>
+}
+
+// Inline code: Docs strips <code>, so wrap in <span>.
+function styleInlineCode(root: HTMLElement): void {
   root.querySelectorAll('code').forEach((code) => {
     if (code.closest('pre')) return;
     const span = document.createElement('span');
@@ -690,8 +694,9 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
     );
     code.replaceWith(span);
   });
+}
 
-  // Lists — explicit padding so nested levels are visibly indented in Docs / Gmail
+function styleLists(root: HTMLElement): void {
   root.querySelectorAll('ul, ol').forEach((list) => {
     setStyle(list as HTMLElement, 'margin:4px 0; padding-left:28px');
   });
@@ -701,21 +706,24 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
   root.querySelectorAll('li').forEach((li) => {
     setStyle(li as HTMLElement, 'margin:2px 0');
   });
+}
 
-  // Footnotes — Obsidian renders these into <section class="footnotes"> at the end
+function styleFootnotes(root: HTMLElement): void {
   root.querySelectorAll<HTMLElement>('section.footnotes, .footnotes').forEach((sec) => {
     setStyle(sec, 'margin-top:24px; padding-top:12px; border-top:1px solid #d0d7de; font-size:0.9em; color:#586069');
   });
   root.querySelectorAll<HTMLElement>('sup, .footnote-ref').forEach((sup) => {
     setStyle(sup, 'font-size:0.75em; vertical-align:super; line-height:0');
   });
+}
 
-  // Highlights (==text== → <mark>)
+function styleHighlights(root: HTMLElement): void {
   root.querySelectorAll('mark').forEach((mk) => {
     setStyle(mk as HTMLElement, 'background:#fff59d; padding:0 2px');
   });
+}
 
-  // Blockquotes
+function styleBlockquotes(root: HTMLElement): void {
   root.querySelectorAll('blockquote').forEach((bq) => {
     if ((bq as HTMLElement).classList.contains('callout')) return;
     setStyle(bq as HTMLElement,
@@ -723,8 +731,9 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
       'color:#586069; background:#fafbfc'
     );
   });
+}
 
-  // Callouts
+function styleCallouts(root: HTMLElement): void {
   root.querySelectorAll<HTMLElement>('.callout').forEach((co) => {
     const type = (co.getAttribute('data-callout') || 'note').toLowerCase();
     const colors = CALLOUT_COLORS[type] ?? CALLOUT_COLORS.note;
@@ -737,8 +746,9 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
     });
     co.querySelectorAll<HTMLElement>('.callout-icon, .callout-fold').forEach((el) => el.remove());
   });
+}
 
-  // Tables
+function styleTables(root: HTMLElement): void {
   root.querySelectorAll('table').forEach((tbl) => {
     setStyle(tbl as HTMLElement,
       'border-collapse:collapse; margin:8px 0; border:1px solid #d0d7de'
@@ -750,20 +760,24 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
   root.querySelectorAll('th').forEach((th) => {
     setStyle(th as HTMLElement, 'background:#f6f8fa; font-weight:600');
   });
+}
 
-  // Horizontal rule
+function styleHorizontalRules(root: HTMLElement): void {
   root.querySelectorAll('hr').forEach((hr) => {
     setStyle(hr as HTMLElement, 'border:0; border-top:1px solid #d0d7de; margin:16px 0');
   });
+}
 
-  // Headings — keep some hierarchy when classes are stripped
-  const headingSize: Record<string, string> = { H1: '1.8em', H2: '1.5em', H3: '1.25em', H4: '1.1em', H5: '1em', H6: '0.9em' };
+const HEADING_SIZE: Record<string, string> = { H1: '1.8em', H2: '1.5em', H3: '1.25em', H4: '1.1em', H5: '1em', H6: '0.9em' };
+
+function styleHeadings(root: HTMLElement): void {
   root.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((h) => {
-    const size = headingSize[h.tagName] ?? '1em';
+    const size = HEADING_SIZE[h.tagName] ?? '1em';
     setStyle(h as HTMLElement, `font-weight:700; margin:0.6em 0 0.3em; font-size:${size}`);
   });
+}
 
-  // Task list checkboxes — replace with unicode so Docs renders something visible
+function replaceTaskCheckboxes(root: HTMLElement): void {
   root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb) => {
     const span = document.createElement('span');
     span.textContent = cb.checked ? '☑ ' : '☐ ';
@@ -831,6 +845,7 @@ async function tryRunMermaid(container: HTMLElement): Promise<void> {
     }
   } catch (err) {
     console.error('Manual mermaid render failed', err);
+    new Notice('Mermaid diagram could not be rendered for clipboard');
   }
 }
 
@@ -915,6 +930,19 @@ async function rasterizeSvg(svg: SVGSVGElement): Promise<HTMLImageElement | null
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+async function embedRemoteImages(root: HTMLElement): Promise<void> {
+  const imgs = Array.from(root.querySelectorAll('img'));
+  await Promise.all(imgs.map(async (img) => {
+    const src = img.getAttribute('src');
+    if (!src || src.startsWith('data:')) return;
+    const dataUrl = await fetchAsDataUrl(src);
+    if (dataUrl) {
+      img.setAttribute('src', dataUrl);
+      img.removeAttribute('srcset');
+    }
+  }));
 }
 
 async function fetchAsDataUrl(url: string): Promise<string | null> {
