@@ -1,10 +1,11 @@
 {
-  "name": "obsidian-image-enlarge",
-  "version": "1.0.1",
-  "description": "Simple image enlarge plugin for Obsidian",
+  "name": "image-workflow",
+  "version": "1.2.0",
+  "description": "Image-centric workflow plugin for Obsidian",
   "main": "main.js",
   "scripts": {
-    "build": "node esbuild.config.mjs"
+    "build": "node esbuild.config.mjs",
+    "dev": "node esbuild.config.mjs --dev"
   },
   "devDependencies": {
     "@types/node": "^16.11.6",

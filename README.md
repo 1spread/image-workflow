@@ -1,30 +1,23 @@
-# Image Enlarge
+# Image Workflow
 
-A minimal Obsidian plugin for enlarging images. Click any image in your notes to view it in a fullscreen overlay with zoom and clipboard copy.
+An image-centric workflow plugin for Obsidian. Click images to enlarge with zoom, copy / download, and copy markdown selections so images paste inline into Gmail, Google Docs, Slack, etc.
 
 ## Features
 
 - **Click to enlarge** — Click any image in your markdown notes to open it in a dark overlay
 - **Mouse wheel zoom** — Scroll to zoom in/out with smart 100% snap
-- **Copy to clipboard** — Click the "Copy" button or press `Cmd/Ctrl+C` to copy the image as PNG
+- **Copy / Download** — Copy image as PNG, save the original to disk, or copy the vault path
+- **Rich markdown copy** — When copying selected markdown that contains image embeds (`![[...]]` or `![](...)`), the plugin writes both plain markdown and an HTML version with images embedded as base64 data URLs, so pasting into Gmail / Google Docs / Slack shows the images inline
+- **Smart paste-back** — Pasting that rich clipboard back into Obsidian inserts the original `![[...]]` markdown (no base64 bloat)
+- **Copy as HTML with embedded images (command)** — Bind a hotkey to render the selection through Obsidian's Markdown renderer (headings, lists, callouts, etc.) and write rich HTML with embedded images
 - **Easy dismiss** — Click the background or press `Escape` to close
-
-## Demo
-
-<!-- TODO: Add demo GIF after recording -->
 
 ## Installation
 
-### From Obsidian Community Plugins
+### Manual
 
-1. Open **Settings** → **Community plugins** → **Browse**
-2. Search for **Image Enlarge**
-3. Click **Install**, then **Enable**
-
-### Manual Installation
-
-1. Download `main.js`, `styles.css`, and `manifest.json` from the [latest release](https://github.com/1spread/obsidian-image-enlarge/releases/latest)
-2. Create a folder `obsidian-image-enlarge` in your vault's `.obsidian/plugins/` directory
+1. Download `main.js`, `styles.css`, and `manifest.json` from the [latest release](https://github.com/1spread/image-workflow/releases/latest)
+2. Create a folder `image-workflow` in your vault's `.obsidian/plugins/` directory
 3. Copy the downloaded files into the folder
 4. Reload Obsidian and enable the plugin in **Settings** → **Community plugins**
 
@@ -34,27 +27,22 @@ A minimal Obsidian plugin for enlarging images. Click any image in your notes to
 |--------|--------|
 | Click an image | Opens fullscreen overlay |
 | Scroll wheel | Zoom in / out |
-| `Cmd/Ctrl + C` | Copy image to clipboard |
-| Click background | Close overlay |
-| `Escape` | Close overlay |
+| `Cmd/Ctrl + C` (overlay) | Copy image to clipboard |
 | Click "Copy" button | Copy image to clipboard |
-| `Cmd/Ctrl + Shift + C` | Copy image path to clipboard |
-
-## Why This Plugin?
-
-Existing image viewer plugins offer many features — rotation, flipping, color inversion, gallery mode, pin mode, and more. If you only need to **enlarge, zoom, and copy**, this plugin provides exactly that in a single lightweight file (~230 lines of TypeScript).
+| Click "Download" button / `Cmd/Ctrl + S` | Save image to disk |
+| `Cmd/Ctrl + Shift + C` (overlay) | Copy image path to clipboard |
+| Click background / `Escape` | Close overlay |
+| Select markdown with images, `Cmd/Ctrl + C` | Copy as rich text with embedded images for Gmail / Docs / Slack |
+| Command: *Copy selection as HTML with embedded images* | Full Markdown-rendered HTML + embedded images (assignable hotkey) |
 
 ## Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Build
 npm run build
 ```
 
-The built `main.js` is output to the project root. If you symlink the project directory into your vault's `.obsidian/plugins/`, changes are reflected after rebuilding and reloading Obsidian (`Cmd+R`).
+The built `main.js` is output to the project root. Symlink the project directory into `.obsidian/plugins/image-workflow/` for live development.
 
 ## Compatibility
 
