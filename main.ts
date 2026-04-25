@@ -410,16 +410,29 @@ export default class ImageEnlargePlugin extends Plugin {
     const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
 
     const container = document.createElement('div');
+    // The container must be in the DOM for Mermaid/MathJax post-processing to run.
+    container.style.position = 'fixed';
+    container.style.left = '-99999px';
+    container.style.top = '0';
+    document.body.appendChild(container);
+
     try {
       await MarkdownRenderer.render(this.app, selection, container, sourcePath, this);
+      // Wait for async post-processors (Mermaid, MathJax, Dataview, etc.) to finish.
+      await waitForAsyncRenders(container);
     } catch (err) {
       console.error('MarkdownRenderer failed', err);
       new Notice('Failed to render markdown');
+      container.remove();
       return;
     }
 
     // Strip Obsidian-internal UI elements that shouldn't be in clipboard HTML
     container.querySelectorAll('.copy-code-button, .frontmatter, .frontmatter-container, .edit-block-button').forEach((el) => el.remove());
+
+    // Convert <svg> (Mermaid diagrams, MathJax) into data-URL <img>.
+    // Google Docs / Gmail strip <svg> on paste; <img> survives.
+    convertSvgToImg(container);
 
     // Google Docs / Gmail strip CSS classes — apply inline styles for code, callouts,
     // highlights, blockquotes, tables so formatting survives the paste.
@@ -439,6 +452,7 @@ export default class ImageEnlargePlugin extends Plugin {
     }));
 
     const html = `<div>${container.innerHTML}</div>`;
+    container.remove();
 
     try {
       await navigator.clipboard.write([
@@ -701,6 +715,52 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
     setStyle(span, 'font-family:monospace');
     cb.replaceWith(span);
   });
+}
+
+async function waitForAsyncRenders(container: HTMLElement): Promise<void> {
+  // Poll for Mermaid / MathJax / similar async renderers up to ~1.5s total.
+  // We consider the DOM "settled" when no <code class="language-mermaid"> remains
+  // unrendered AND two consecutive frames see the same SVG count.
+  const deadline = Date.now() + 1500;
+  let lastSvgCount = -1;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 80));
+    const pendingMermaid = container.querySelector('code.language-mermaid');
+    const svgCount = container.querySelectorAll('svg').length;
+    if (!pendingMermaid && svgCount === lastSvgCount && svgCount > 0) return;
+    if (!pendingMermaid && svgCount === 0 && lastSvgCount === 0) return;
+    lastSvgCount = svgCount;
+  }
+}
+
+function convertSvgToImg(root: HTMLElement): void {
+  const svgs = Array.from(root.querySelectorAll<SVGSVGElement>('svg'));
+  for (const svg of svgs) {
+    try {
+      // Ensure xmlns is present for standalone serialization
+      if (!svg.getAttribute('xmlns')) svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      // Capture rendered size so the <img> keeps the same footprint
+      const rect = svg.getBoundingClientRect();
+      const width = svg.getAttribute('width') ?? (rect.width > 0 ? `${Math.round(rect.width)}` : null);
+      const height = svg.getAttribute('height') ?? (rect.height > 0 ? `${Math.round(rect.height)}` : null);
+
+      const serialized = new XMLSerializer().serializeToString(svg);
+      const utf8 = new TextEncoder().encode(serialized);
+      const base64 = arrayBufferToBase64(utf8.buffer);
+      const dataUrl = `data:image/svg+xml;base64,${base64}`;
+
+      const img = document.createElement('img');
+      img.setAttribute('src', dataUrl);
+      if (width) img.setAttribute('width', width);
+      if (height) img.setAttribute('height', height);
+      img.setAttribute('alt', 'diagram');
+
+      // Mermaid/MathJax often wrap the svg in a div — replace just the svg.
+      svg.replaceWith(img);
+    } catch (err) {
+      console.error('SVG → img conversion failed', err);
+    }
+  }
 }
 
 async function fetchAsDataUrl(url: string): Promise<string | null> {
