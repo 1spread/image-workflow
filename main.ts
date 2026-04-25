@@ -431,9 +431,10 @@ export default class ImageEnlargePlugin extends Plugin {
     // Strip Obsidian-internal UI elements that shouldn't be in clipboard HTML
     container.querySelectorAll('.copy-code-button, .frontmatter, .frontmatter-container, .edit-block-button').forEach((el) => el.remove());
 
-    // Convert <svg> (Mermaid diagrams, MathJax) into data-URL <img>.
-    // Google Docs / Gmail strip <svg> on paste; <img> survives.
-    convertSvgToImg(container);
+    // Rasterize <svg> (Mermaid diagrams, MathJax) into PNG <img>.
+    // Google Docs / Gmail strip <svg> on paste, and many also reject
+    // data:image/svg+xml URLs — PNG raster always works.
+    await convertSvgToImg(container);
 
     // Google Docs / Gmail strip CSS classes — apply inline styles for code, callouts,
     // highlights, blockquotes, tables so formatting survives the paste.
@@ -764,7 +765,7 @@ async function waitForAsyncRenders(container: HTMLElement): Promise<void> {
   }
 }
 
-function convertSvgToImg(root: HTMLElement): void {
+async function convertSvgToImg(root: HTMLElement): Promise<void> {
   // MathJax produces <mjx-container><svg/></mjx-container>. Extract the inner svg
   // first so the wrapping <mjx-container> (which Docs strips entirely) goes away.
   root.querySelectorAll('mjx-container').forEach((mjx) => {
@@ -781,31 +782,69 @@ function convertSvgToImg(root: HTMLElement): void {
   });
 
   const svgs = Array.from(root.querySelectorAll<SVGSVGElement>('svg'));
-  for (const svg of svgs) {
+  await Promise.all(svgs.map(async (svg) => {
     try {
-      // Ensure xmlns is present for standalone serialization
-      if (!svg.getAttribute('xmlns')) svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-      // Capture rendered size so the <img> keeps the same footprint
-      const rect = svg.getBoundingClientRect();
-      const width = svg.getAttribute('width') ?? (rect.width > 0 ? `${Math.round(rect.width)}` : null);
-      const height = svg.getAttribute('height') ?? (rect.height > 0 ? `${Math.round(rect.height)}` : null);
-
-      const serialized = new XMLSerializer().serializeToString(svg);
-      const utf8 = new TextEncoder().encode(serialized);
-      const base64 = arrayBufferToBase64(utf8.buffer);
-      const dataUrl = `data:image/svg+xml;base64,${base64}`;
-
-      const img = document.createElement('img');
-      img.setAttribute('src', dataUrl);
-      if (width) img.setAttribute('width', width);
-      if (height) img.setAttribute('height', height);
-      img.setAttribute('alt', 'diagram');
-
-      // Mermaid/MathJax often wrap the svg in a div — replace just the svg.
-      svg.replaceWith(img);
+      const png = await rasterizeSvg(svg);
+      if (png) {
+        svg.replaceWith(png);
+      }
     } catch (err) {
-      console.error('SVG → img conversion failed', err);
+      console.error('SVG rasterization failed', err);
     }
+  }));
+}
+
+async function rasterizeSvg(svg: SVGSVGElement): Promise<HTMLImageElement | null> {
+  // Ensure xmlns + concrete dimensions so the standalone SVG renders correctly.
+  if (!svg.getAttribute('xmlns')) svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  if (!svg.getAttribute('xmlns:xlink')) svg.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+
+  const rect = svg.getBoundingClientRect();
+  const viewBox = svg.getAttribute('viewBox')?.split(/\s+/).map(Number);
+  const intrinsicW = viewBox && viewBox.length === 4 ? viewBox[2] : 0;
+  const intrinsicH = viewBox && viewBox.length === 4 ? viewBox[3] : 0;
+  const cssW = rect.width || parseFloat(svg.getAttribute('width') || '0') || intrinsicW || 600;
+  const cssH = rect.height || parseFloat(svg.getAttribute('height') || '0') || intrinsicH || 400;
+
+  if (!svg.getAttribute('width')) svg.setAttribute('width', String(cssW));
+  if (!svg.getAttribute('height')) svg.setAttribute('height', String(cssH));
+
+  const serialized = new XMLSerializer().serializeToString(svg);
+  const svgBlob = new Blob([serialized], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(svgBlob);
+
+  try {
+    const dpr = 2; // 2x for crisper paste in Docs / Gmail
+    const png = await new Promise<HTMLImageElement | null>((resolve) => {
+      const loader = new Image();
+      loader.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(cssW * dpr));
+          canvas.height = Math.max(1, Math.round(cssH * dpr));
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return resolve(null);
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(loader, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/png');
+          const img = document.createElement('img');
+          img.src = dataUrl;
+          img.width = Math.round(cssW);
+          img.height = Math.round(cssH);
+          img.alt = 'diagram';
+          resolve(img);
+        } catch (err) {
+          console.error('canvas draw failed', err);
+          resolve(null);
+        }
+      };
+      loader.onerror = () => resolve(null);
+      loader.src = url;
+    });
+    return png;
+  } finally {
+    URL.revokeObjectURL(url);
   }
 }
 
