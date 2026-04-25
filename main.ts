@@ -107,26 +107,26 @@ export default class ImageEnlargePlugin extends Plugin {
     if (this.overlayEl) return;
 
     const overlay = document.createElement('div');
-    overlay.addClass('image-enlarge-overlay');
+    overlay.addClass('image-workflow-overlay');
     this.overlayEl = overlay;
 
     const imgView = document.createElement('img');
-    imgView.addClass('image-enlarge-view');
+    imgView.addClass('image-workflow-view');
     imgView.src = src;
 
     const btnGroup = document.createElement('div');
-    btnGroup.addClass('image-enlarge-btn-group');
+    btnGroup.addClass('image-workflow-btn-group');
 
     const copyBtn = document.createElement('button');
-    copyBtn.addClass('image-enlarge-btn');
+    copyBtn.addClass('image-workflow-btn');
     copyBtn.textContent = 'Copy';
 
     const downloadBtn = document.createElement('button');
-    downloadBtn.addClass('image-enlarge-btn');
+    downloadBtn.addClass('image-workflow-btn');
     downloadBtn.textContent = 'Download';
 
     const copyPathBtn = document.createElement('button');
-    copyPathBtn.addClass('image-enlarge-btn');
+    copyPathBtn.addClass('image-workflow-btn');
     copyPathBtn.textContent = 'Copy Path';
 
     btnGroup.appendChild(copyBtn);
@@ -421,6 +421,10 @@ export default class ImageEnlargePlugin extends Plugin {
     // Strip Obsidian-internal UI elements that shouldn't be in clipboard HTML
     container.querySelectorAll('.copy-code-button, .frontmatter, .frontmatter-container, .edit-block-button').forEach((el) => el.remove());
 
+    // Google Docs / Gmail strip CSS classes — apply inline styles for code, callouts,
+    // highlights, blockquotes, tables so formatting survives the paste.
+    inlineStyleForExternalPaste(container);
+
     const imgs = Array.from(container.querySelectorAll('img'));
     await Promise.all(imgs.map(async (img) => {
       const src = img.getAttribute('src');
@@ -581,6 +585,122 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
     binary += String.fromCharCode.apply(null, Array.from(sub));
   }
   return btoa(binary);
+}
+
+const CALLOUT_COLORS: Record<string, { border: string; bg: string; title: string }> = {
+  note:     { border: '#448aff', bg: '#e3f2fd', title: '#1565c0' },
+  abstract: { border: '#00bcd4', bg: '#e0f7fa', title: '#00838f' },
+  summary:  { border: '#00bcd4', bg: '#e0f7fa', title: '#00838f' },
+  tldr:     { border: '#00bcd4', bg: '#e0f7fa', title: '#00838f' },
+  info:     { border: '#00b8d4', bg: '#e1f5fe', title: '#0277bd' },
+  todo:     { border: '#00b0ff', bg: '#e1f5fe', title: '#0277bd' },
+  tip:      { border: '#00bfa5', bg: '#e0f2f1', title: '#00695c' },
+  hint:     { border: '#00bfa5', bg: '#e0f2f1', title: '#00695c' },
+  important:{ border: '#00bfa5', bg: '#e0f2f1', title: '#00695c' },
+  success:  { border: '#00c853', bg: '#e8f5e9', title: '#2e7d32' },
+  check:    { border: '#00c853', bg: '#e8f5e9', title: '#2e7d32' },
+  done:     { border: '#00c853', bg: '#e8f5e9', title: '#2e7d32' },
+  question: { border: '#64dd17', bg: '#f1f8e9', title: '#558b2f' },
+  help:     { border: '#64dd17', bg: '#f1f8e9', title: '#558b2f' },
+  faq:      { border: '#64dd17', bg: '#f1f8e9', title: '#558b2f' },
+  warning:  { border: '#ff9100', bg: '#fff3e0', title: '#e65100' },
+  caution:  { border: '#ff9100', bg: '#fff3e0', title: '#e65100' },
+  attention:{ border: '#ff9100', bg: '#fff3e0', title: '#e65100' },
+  failure:  { border: '#ff5252', bg: '#ffebee', title: '#c62828' },
+  fail:     { border: '#ff5252', bg: '#ffebee', title: '#c62828' },
+  missing:  { border: '#ff5252', bg: '#ffebee', title: '#c62828' },
+  danger:   { border: '#ff1744', bg: '#ffebee', title: '#b71c1c' },
+  error:    { border: '#ff1744', bg: '#ffebee', title: '#b71c1c' },
+  bug:      { border: '#f50057', bg: '#fce4ec', title: '#ad1457' },
+  example:  { border: '#7c4dff', bg: '#ede7f6', title: '#4527a0' },
+  quote:    { border: '#9e9e9e', bg: '#fafafa', title: '#424242' },
+  cite:     { border: '#9e9e9e', bg: '#fafafa', title: '#424242' },
+};
+
+function setStyle(el: HTMLElement, css: string): void {
+  const existing = el.getAttribute('style') ?? '';
+  el.setAttribute('style', existing ? `${existing}; ${css}` : css);
+}
+
+function inlineStyleForExternalPaste(root: HTMLElement): void {
+  // Code blocks (pre > code)
+  root.querySelectorAll('pre').forEach((pre) => {
+    setStyle(pre as HTMLElement,
+      'background:#f6f8fa; border:1px solid #e1e4e8; border-radius:6px; ' +
+      'padding:12px 16px; margin:8px 0; ' +
+      'font-family:Menlo, Consolas, "Courier New", monospace; font-size:13px; ' +
+      'line-height:1.45; white-space:pre-wrap; overflow-x:auto; color:#24292e'
+    );
+  });
+  // Inline code (not inside <pre>)
+  root.querySelectorAll('code').forEach((code) => {
+    if (code.closest('pre')) return;
+    setStyle(code as HTMLElement,
+      'background:#f6f8fa; padding:2px 6px; border-radius:4px; ' +
+      'font-family:Menlo, Consolas, "Courier New", monospace; font-size:0.9em; color:#d6336c'
+    );
+  });
+
+  // Highlights (==text== → <mark>)
+  root.querySelectorAll('mark').forEach((mk) => {
+    setStyle(mk as HTMLElement, 'background:#fff59d; padding:0 2px');
+  });
+
+  // Blockquotes
+  root.querySelectorAll('blockquote').forEach((bq) => {
+    if ((bq as HTMLElement).classList.contains('callout')) return;
+    setStyle(bq as HTMLElement,
+      'border-left:4px solid #dfe2e5; margin:8px 0; padding:4px 12px; ' +
+      'color:#586069; background:#fafbfc'
+    );
+  });
+
+  // Callouts
+  root.querySelectorAll<HTMLElement>('.callout').forEach((co) => {
+    const type = (co.getAttribute('data-callout') || 'note').toLowerCase();
+    const colors = CALLOUT_COLORS[type] ?? CALLOUT_COLORS.note;
+    setStyle(co,
+      `border-left:4px solid ${colors.border}; background:${colors.bg}; ` +
+      `border-radius:4px; padding:10px 14px; margin:8px 0; color:#24292e`
+    );
+    co.querySelectorAll<HTMLElement>('.callout-title').forEach((t) => {
+      setStyle(t, `color:${colors.title}; font-weight:600; margin-bottom:4px; display:block`);
+    });
+    co.querySelectorAll<HTMLElement>('.callout-icon, .callout-fold').forEach((el) => el.remove());
+  });
+
+  // Tables
+  root.querySelectorAll('table').forEach((tbl) => {
+    setStyle(tbl as HTMLElement,
+      'border-collapse:collapse; margin:8px 0; border:1px solid #d0d7de'
+    );
+  });
+  root.querySelectorAll('th, td').forEach((cell) => {
+    setStyle(cell as HTMLElement, 'border:1px solid #d0d7de; padding:6px 12px');
+  });
+  root.querySelectorAll('th').forEach((th) => {
+    setStyle(th as HTMLElement, 'background:#f6f8fa; font-weight:600');
+  });
+
+  // Horizontal rule
+  root.querySelectorAll('hr').forEach((hr) => {
+    setStyle(hr as HTMLElement, 'border:0; border-top:1px solid #d0d7de; margin:16px 0');
+  });
+
+  // Headings — keep some hierarchy when classes are stripped
+  const headingSize: Record<string, string> = { H1: '1.8em', H2: '1.5em', H3: '1.25em', H4: '1.1em', H5: '1em', H6: '0.9em' };
+  root.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((h) => {
+    const size = headingSize[h.tagName] ?? '1em';
+    setStyle(h as HTMLElement, `font-weight:700; margin:0.6em 0 0.3em; font-size:${size}`);
+  });
+
+  // Task list checkboxes — replace with unicode so Docs renders something visible
+  root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb) => {
+    const span = document.createElement('span');
+    span.textContent = cb.checked ? '☑ ' : '☐ ';
+    setStyle(span, 'font-family:monospace');
+    cb.replaceWith(span);
+  });
 }
 
 async function fetchAsDataUrl(url: string): Promise<string | null> {
