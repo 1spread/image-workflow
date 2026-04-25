@@ -1,4 +1,4 @@
-import { FileSystemAdapter, Notice, Plugin, Scope, TFile } from 'obsidian';
+import { Editor, FileSystemAdapter, MarkdownRenderer, Notice, Plugin, Scope, TFile } from 'obsidian';
 
 const IMG_SELECTOR = `.workspace-leaf-content[data-type='markdown'] img:not(a img), .workspace-leaf-content[data-type='image'] img`;
 const ZOOM_FACTOR = 0.8;
@@ -89,6 +89,14 @@ export default class ImageEnlargePlugin extends Plugin {
     this.registerDomEvent(document, 'click', this.handleImageClick, true);
     this.registerDomEvent(document, 'copy', this.handleCopy, true);
     this.registerDomEvent(document, 'paste', this.handlePaste, true);
+
+    this.addCommand({
+      id: 'copy-as-html-with-images',
+      name: 'Copy selection as HTML with embedded images',
+      editorCallback: (editor: Editor) => {
+        void this.copySelectionAsRichHtml(editor);
+      },
+    });
   }
 
   onunload() {
@@ -388,6 +396,57 @@ export default class ImageEnlargePlugin extends Plugin {
     if (this.overlayEl) {
       this.overlayEl.remove();
       this.overlayEl = null;
+    }
+  }
+
+  // ---- Command: Copy selection as HTML with embedded images (Obsidian-rendered) ----
+
+  private async copySelectionAsRichHtml(editor: Editor): Promise<void> {
+    const selection = editor.getSelection() || editor.getValue();
+    if (!selection) {
+      new Notice('Nothing selected');
+      return;
+    }
+    const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
+
+    const container = document.createElement('div');
+    try {
+      await MarkdownRenderer.render(this.app, selection, container, sourcePath, this);
+    } catch (err) {
+      console.error('MarkdownRenderer failed', err);
+      new Notice('Failed to render markdown');
+      return;
+    }
+
+    // Strip Obsidian-internal UI elements that shouldn't be in clipboard HTML
+    container.querySelectorAll('.copy-code-button, .frontmatter, .frontmatter-container, .edit-block-button').forEach((el) => el.remove());
+
+    const imgs = Array.from(container.querySelectorAll('img'));
+    await Promise.all(imgs.map(async (img) => {
+      const src = img.getAttribute('src');
+      if (!src || src.startsWith('data:')) return;
+      const dataUrl = await fetchAsDataUrl(src);
+      if (dataUrl) {
+        img.setAttribute('src', dataUrl);
+        img.removeAttribute('srcset');
+      } else {
+        new Notice(`Could not embed image: ${src.split('/').pop() ?? src}`);
+      }
+    }));
+
+    const html = `<div>${container.innerHTML}</div>`;
+
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([selection], { type: 'text/plain' }),
+        }),
+      ]);
+      new Notice('Copied as HTML with embedded images');
+    } catch (err) {
+      console.error('Clipboard write failed', err);
+      new Notice('Failed to copy');
     }
   }
 
