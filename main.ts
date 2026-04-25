@@ -1,4 +1,4 @@
-import { Editor, FileSystemAdapter, MarkdownRenderer, Notice, Plugin, Scope, TFile } from 'obsidian';
+import { App, Editor, FileSystemAdapter, MarkdownRenderer, MarkdownView, Notice, Plugin, PluginSettingTab, Scope, Setting, TFile } from 'obsidian';
 
 const IMG_SELECTOR = `.workspace-leaf-content[data-type='markdown'] img:not(a img), .workspace-leaf-content[data-type='image'] img`;
 const ZOOM_FACTOR = 0.8;
@@ -27,7 +27,18 @@ interface ImgInfo {
   top: number;
 }
 
+interface ImageWorkflowSettings {
+  autoEmbedOnCopy: boolean;
+}
+
+const DEFAULT_SETTINGS: ImageWorkflowSettings = {
+  autoEmbedOnCopy: true,
+};
+
+const BODY_CLASS = 'image-workflow-enabled';
+
 export default class ImageEnlargePlugin extends Plugin {
+  settings: ImageWorkflowSettings = { ...DEFAULT_SETTINGS };
   private overlayEl: HTMLDivElement | null = null;
   private imgInfo: ImgInfo = { curWidth: 0, curHeight: 0, realWidth: 0, realHeight: 0, left: 0, top: 0 };
   private overlayScope: Scope | null = null;
@@ -63,11 +74,19 @@ export default class ImageEnlargePlugin extends Plugin {
 
     evt.preventDefault();
     evt.stopPropagation();
-    // Insert the plain-text (original markdown) version instead.
-    document.execCommand('insertText', false, text);
+    // Insert the plain-text (original markdown) version instead. Prefer the
+    // Editor API for clean CM6 undo integration; fall back to execCommand.
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (view) {
+      view.editor.replaceSelection(text);
+    } else {
+      document.execCommand('insertText', false, text);
+    }
   };
 
   private handleCopy = (evt: ClipboardEvent) => {
+    if (!this.settings.autoEmbedOnCopy) return;
+
     const target = evt.target as HTMLElement | null;
     // Only intercept copies originating from a markdown leaf
     if (!target || !target.closest(`.workspace-leaf-content[data-type='markdown']`)) return;
@@ -84,7 +103,10 @@ export default class ImageEnlargePlugin extends Plugin {
     void this.writeRichClipboard(text);
   };
 
-  onload() {
+  async onload() {
+    await this.loadSettings();
+    document.body.classList.add(BODY_CLASS);
+
     // capture: true — Obsidian/CM6 の stopPropagation より先に発火
     this.registerDomEvent(document, 'click', this.handleImageClick, true);
     this.registerDomEvent(document, 'copy', this.handleCopy, true);
@@ -97,10 +119,21 @@ export default class ImageEnlargePlugin extends Plugin {
         void this.copySelectionAsRichHtml(editor);
       },
     });
+
+    this.addSettingTab(new ImageWorkflowSettingTab(this.app, this));
   }
 
   onunload() {
+    document.body.classList.remove(BODY_CLASS);
     this.closeOverlay();
+  }
+
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  async saveSettings() {
+    await this.saveData(this.settings);
   }
 
   private openOverlay(src: string) {
@@ -455,6 +488,8 @@ export default class ImageEnlargePlugin extends Plugin {
       inlineStyleForExternalPaste(container);
       await embedRemoteImages(container);
 
+      // innerHTML source is Obsidian's MarkdownRenderer.render output (trusted),
+      // serialized into a clipboard payload (not re-injected into DOM).
       const html = `<div>${container.innerHTML}</div>`;
       return new Blob([html], { type: 'text/html' });
     } finally {
@@ -687,7 +722,7 @@ function styleInlineCode(root: HTMLElement): void {
   root.querySelectorAll('code').forEach((code) => {
     if (code.closest('pre')) return;
     const span = document.createElement('span');
-    span.innerHTML = code.innerHTML;
+    while (code.firstChild) span.appendChild(code.firstChild);
     span.setAttribute('style',
       'background:#f6f8fa; padding:2px 6px; border-radius:4px; ' +
       'font-family:Menlo, Consolas, "Courier New", monospace; font-size:0.9em; color:#d6336c'
@@ -960,5 +995,39 @@ async function fetchAsDataUrl(url: string): Promise<string | null> {
     return `data:${mime};base64,${arrayBufferToBase64(buf)}`;
   } catch {
     return null;
+  }
+}
+
+// ---- Settings tab ----
+
+class ImageWorkflowSettingTab extends PluginSettingTab {
+  plugin: ImageEnlargePlugin;
+
+  constructor(app: App, plugin: ImageEnlargePlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    new Setting(containerEl)
+      .setName('Auto-embed images on copy')
+      .setDesc(
+        'When enabled, copying a markdown selection that contains image embeds ' +
+        '(![[...]] or ![](...)) writes an HTML version to the clipboard with images ' +
+        'embedded as base64 data URLs. This lets you paste images inline into Gmail, ' +
+        'Google Docs, and Slack. Disable to use Obsidian\'s default copy behavior. ' +
+        'The "Copy selection as HTML with embedded images" command stays available either way.'
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.autoEmbedOnCopy)
+          .onChange(async (value) => {
+            this.plugin.settings.autoEmbedOnCopy = value;
+            await this.plugin.saveSettings();
+          })
+      );
   }
 }

@@ -1,6 +1,7 @@
-/* CSS-based cursor for enlargeable images (replaces JS mouseover handler) */
-.workspace-leaf-content[data-type='markdown'] img:not(a img),
-.workspace-leaf-content[data-type='image'] img {
+/* CSS-based cursor for enlargeable images. Scoped under body.image-workflow-enabled
+   so disabling the plugin instantly reverts the cursor without lingering styles. */
+body.image-workflow-enabled .workspace-leaf-content[data-type='markdown'] img:not(a img),
+body.image-workflow-enabled .workspace-leaf-content[data-type='image'] img {
   cursor: zoom-in;
 }
 

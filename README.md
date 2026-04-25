@@ -14,6 +14,20 @@ An image-centric workflow plugin for Obsidian. Click images to enlarge with zoom
 
 ## Installation
 
+### From Obsidian Community Plugins
+
+1. Open **Settings** → **Community plugins** → **Browse**
+2. Search for **Image Workflow**
+3. Install, then enable
+
+### Via BRAT (beta installer)
+
+While the plugin is awaiting community-plugin review, install with [BRAT](https://github.com/TfTHacker/obsidian42-brat):
+
+1. Install the BRAT plugin from Community plugins
+2. BRAT → "Add Beta plugin" → paste `1spread/image-workflow`
+3. Enable Image Workflow in **Settings** → **Community plugins**
+
 ### Manual
 
 1. Download `main.js`, `styles.css`, and `manifest.json` from the [latest release](https://github.com/1spread/image-workflow/releases/latest)
@@ -35,6 +49,14 @@ An image-centric workflow plugin for Obsidian. Click images to enlarge with zoom
 | Select markdown with images, `Cmd/Ctrl + C` | Copy as rich text with embedded images for Gmail / Docs / Slack |
 | Command: *Copy selection as HTML with embedded images* | Full Markdown-rendered HTML + embedded images (assignable hotkey) |
 
+## Settings
+
+- **Auto-embed images on copy** *(default: on)* — toggles the auto Cmd/Ctrl+C interception. Disable to use Obsidian's standard copy and rely solely on the *Copy selection as HTML with embedded images* command via your own hotkey.
+
+## Demo
+
+<!-- TODO: add demo gif at assets/demo.gif -->
+
 ## Development
 
 ```bash
@@ -47,7 +69,11 @@ The built `main.js` is output to the project root. Symlink the project directory
 ## Compatibility
 
 - **Desktop only** — Uses the Clipboard API (`ClipboardItem`), which requires Electron
-- **Obsidian** ≥ 0.15.0
+- **Obsidian** ≥ 1.4.0
+
+## Reporting issues
+
+Please open an issue on [GitHub](https://github.com/1spread/image-workflow/issues) with reproduction steps, your Obsidian version, and OS.
 
 ## License
 
