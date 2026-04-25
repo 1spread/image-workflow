@@ -639,14 +639,45 @@ function setStyle(el: HTMLElement, css: string): void {
 }
 
 function inlineStyleForExternalPaste(root: HTMLElement): void {
-  // Code blocks (pre > code)
+  // Code blocks (pre > code) — Google Docs is fragile with nested <pre>/<code>
+  // and syntax-highlight <span>s; flatten to a single block of plain text and
+  // wrap in a single-cell <table>, which Docs reliably renders as a code-block-
+  // shaped box that preserves newlines and indentation.
   root.querySelectorAll('pre').forEach((pre) => {
-    setStyle(pre as HTMLElement,
-      'background:#f6f8fa; border:1px solid #e1e4e8; border-radius:6px; ' +
-      'padding:12px 16px; margin:8px 0; ' +
-      'font-family:Menlo, Consolas, "Courier New", monospace; font-size:13px; ' +
-      'line-height:1.45; white-space:pre-wrap; overflow-x:auto; color:#24292e'
+    const codeEl = pre.querySelector('code');
+    // Use innerText to capture visual newlines; fall back to textContent.
+    const raw = ((codeEl ?? pre) as HTMLElement).innerText
+      || (codeEl ?? pre).textContent
+      || '';
+    // Drop any leading/trailing blank line from highlighter wrapping.
+    const text = raw.replace(/^\n+|\n+$/g, '');
+
+    const table = document.createElement('table');
+    table.setAttribute('style',
+      'border-collapse:collapse; margin:8px 0; width:100%; ' +
+      'background:#f6f8fa; border:1px solid #e1e4e8; border-radius:6px'
     );
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.setAttribute('style',
+      'padding:12px 16px; ' +
+      'font-family:Menlo, Consolas, "Courier New", monospace; ' +
+      'font-size:13px; line-height:1.45; color:#24292e; ' +
+      'white-space:pre-wrap; word-break:break-word; ' +
+      'border:1px solid #e1e4e8'
+    );
+    // Preserve newlines as <br> so Docs respects line breaks even if it
+    // strips white-space:pre. Tabs get rendered as 4 spaces.
+    const lines = text.split('\n');
+    lines.forEach((line, i) => {
+      const span = document.createElement('span');
+      span.textContent = line.replace(/\t/g, '    ');
+      td.appendChild(span);
+      if (i < lines.length - 1) td.appendChild(document.createElement('br'));
+    });
+    tr.appendChild(td);
+    table.appendChild(tr);
+    pre.replaceWith(table);
   });
   // Inline code (not inside <pre>) — Google Docs strips <code>, so wrap in <span>
   root.querySelectorAll('code').forEach((code) => {
