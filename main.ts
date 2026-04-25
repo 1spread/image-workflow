@@ -918,6 +918,10 @@ async function rasterizeSvg(svg: SVGSVGElement): Promise<HTMLImageElement | null
 }
 
 async function fetchAsDataUrl(url: string): Promise<string | null> {
+  // Only follow http(s). Refuse file://, app://, blob:, etc. — in Electron's
+  // renderer fetch can read local files, which would let a crafted note
+  // exfiltrate them via the clipboard payload.
+  if (!/^https?:\/\//i.test(url)) return null;
   try {
     const res = await fetch(url);
     if (!res.ok) return null;
