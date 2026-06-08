@@ -12,3 +12,8 @@
 - `daisuke-ignite` が active の場合は、先に `gh auth switch -u 1spread` を実行してから release 作成や asset upload を行うこと。
 - `workflow` scope 不足に見える release 作成エラーでも、まず active account が `1spread` か確認すること。前回は `daisuke-ignite` が active だったことが原因で、`1spread` に切り替えると `1.2.2` release を作成できた。
 
+## Version Metadata
+
+- プラグインのバージョンを上げるときは、必ず `manifest.json` の `version` も同じバージョンに更新すること。
+- 同じタイミングで `package.json`, `package-lock.json`, `versions.json` も確認し、Obsidian release metadata が同じバージョンを指す状態に揃えること。
+- Release 作成前に `manifest.json` の version と tag/release version が一致していることを確認すること。
