@@ -12,7 +12,7 @@ Add a GitHub Actions release workflow for `1spread/image-workflow` that runs on 
 - [x] Add a Node 24 release workflow.
 - [x] Validate workflow YAML.
 - [x] Run local build verification.
-- [ ] Commit and push to `origin/main`.
+- [x] Commit and push to `origin/main`.
 - [x] Record final result.
 
 ## Notes
@@ -26,6 +26,7 @@ Add a GitHub Actions release workflow for `1spread/image-workflow` that runs on 
 - Parsed `.github/workflows/release.yml` with Ruby YAML successfully.
 - `git diff --check` passed.
 - `npm run build` passed after installing dependencies with `npm ci`.
+- Pushed `ci: add node 24 release workflow` to `origin/main`.
 
 ## Follow-up
 
