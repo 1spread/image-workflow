@@ -9,7 +9,12 @@ Record the repository rule that any plugin version update must also update `mani
 - [x] Confirm current working tree is clean.
 - [x] Add the manifest version rule to `AGENTS.md`.
 - [x] Add a plan file documenting the rule update.
-- [ ] Commit and push the rule update.
+- [x] Commit and push the rule update.
+
+## Verification
+
+- Added `Version Metadata` section to `AGENTS.md`.
+- Pushed the rule update to `origin/main`.
 
 ## Notes
 
