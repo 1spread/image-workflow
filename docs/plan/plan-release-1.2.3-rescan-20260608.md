@@ -11,11 +11,11 @@ Bump `image-workflow` from `1.2.2` to `1.2.3` so the Obsidian scanner sees a new
 - [x] Confirm tag/release `1.2.3` does not already exist.
 - [x] Update version metadata to `1.2.3`.
 - [x] Run local build verification.
-- [ ] Commit and push version metadata.
-- [ ] Create and push tag `1.2.3`.
-- [ ] Watch release workflow.
-- [ ] Verify GitHub Release `1.2.3`.
-- [ ] Record final result.
+- [x] Commit and push version metadata.
+- [x] Create and push tag `1.2.3`.
+- [x] Watch release workflow.
+- [x] Verify GitHub Release `1.2.3`.
+- [x] Record final result.
 
 ## Notes
 
@@ -26,3 +26,7 @@ Bump `image-workflow` from `1.2.2` to `1.2.3` so the Obsidian scanner sees a new
 
 - `npm run build` passed with `image-workflow@1.2.3`.
 - `git diff --check` passed.
+- Pushed `main` with manifest version `1.2.3`.
+- Pushed tag `1.2.3`.
+- GitHub Actions run `27144127644` passed.
+- GitHub Release `1.2.3` is published and includes `main.js`, `manifest.json`, and `styles.css`.
