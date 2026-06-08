@@ -11,11 +11,12 @@ Version, commit, and push the Google Docs/Gmail copy improvements to `main` so t
 - [x] Bump patch version for release.
 - [x] Rebuild plugin output.
 - [x] Review changed files.
-- [ ] Commit changes.
-- [ ] Push `main`.
+- [x] Commit changes.
+- [x] Push `main`.
 
 ## Result
 
 - Version bumped from `1.2.1` to `1.2.2`.
 - `manifest.json` and `versions.json` updated for Obsidian release metadata.
 - `npm run build` completed successfully.
+- Pushed to `origin/main`.
