@@ -1,7 +1,7 @@
-/* CSS-based cursor for enlargeable images. Scoped under body.image-workflow-enabled
-   so disabling the plugin instantly reverts the cursor without lingering styles. */
-body.image-workflow-enabled .workspace-leaf-content[data-type='markdown'] img:not(a img),
-body.image-workflow-enabled .workspace-leaf-content[data-type='image'] img {
+/* CSS-based cursor for enlargeable images. The plugin stylesheet is loaded only
+   while the plugin is enabled, so no runtime body class is needed. */
+.workspace-leaf-content[data-type='markdown'] img:not(a img),
+.workspace-leaf-content[data-type='image'] img {
   cursor: zoom-in;
 }
 
@@ -20,10 +20,30 @@ body.image-workflow-enabled .workspace-leaf-content[data-type='image'] img {
   position: absolute;
   top: 0;
   left: 0;
+  width: var(--image-workflow-view-width);
+  height: var(--image-workflow-view-height);
+  transform: var(--image-workflow-view-transform);
   cursor: grab;
   max-width: none;
   max-height: none;
   border-radius: 4px;
+}
+
+.image-workflow-render-buffer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 800px;
+  height: auto;
+  opacity: 0;
+  pointer-events: none;
+  z-index: -1;
+  overflow: visible;
+}
+
+.image-workflow-math-block {
+  text-align: var(--image-workflow-math-align);
+  margin: var(--image-workflow-math-margin);
 }
 
 .image-workflow-btn-group {

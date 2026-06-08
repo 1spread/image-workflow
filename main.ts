@@ -1,4 +1,4 @@
-import { App, Editor, FileSystemAdapter, MarkdownRenderer, MarkdownView, Notice, Plugin, PluginSettingTab, Scope, Setting, TFile } from 'obsidian';
+import { App, Component, Editor, FileSystemAdapter, MarkdownRenderer, MarkdownView, Notice, Plugin, PluginSettingTab, requestUrl, Scope, Setting, TFile } from 'obsidian';
 
 const IMG_SELECTOR = `.workspace-leaf-content[data-type='markdown'] img:not(a img), .workspace-leaf-content[data-type='image'] img`;
 const ZOOM_FACTOR = 0.8;
@@ -39,8 +39,6 @@ const DEFAULT_SETTINGS: ImageWorkflowSettings = {
   preserveSoftLineBreaks: true,
 };
 
-const BODY_CLASS = 'image-workflow-enabled';
-
 export default class ImageEnlargePlugin extends Plugin {
   settings: ImageWorkflowSettings = { ...DEFAULT_SETTINGS };
   private overlayEl: HTMLDivElement | null = null;
@@ -48,22 +46,24 @@ export default class ImageEnlargePlugin extends Plugin {
   private overlayScope: Scope | null = null;
   private overlayAbortController: AbortController | null = null;
   private rafId: number | null = null;
+  private rafWin: Window | null = null;
 
   private handleImageClick = (evt: MouseEvent) => {
-    const target = evt.target as HTMLElement;
-    const img = target instanceof HTMLImageElement
+    const target = getEventTargetElement(evt);
+    if (!target) return;
+    const img = target.instanceOf(HTMLImageElement)
       ? target
       : target.closest('img');
-    if (!img || !(img instanceof HTMLImageElement)) return;
+    if (!img?.instanceOf(HTMLImageElement)) return;
     if (!img.matches(IMG_SELECTOR)) return;
     if (this.overlayEl) return;
     evt.preventDefault();
     evt.stopPropagation(); // Obsidian 側のハンドラが画像を別ペインで開くのを防ぐ
-    this.openOverlay(img.src);
+    this.openOverlay(img.src, img.doc);
   };
 
   private handlePaste = (evt: ClipboardEvent) => {
-    const target = evt.target as HTMLElement | null;
+    const target = getEventTargetElement(evt);
     if (!target || !target.closest(`.workspace-leaf-content[data-type='markdown']`)) return;
 
     const data = evt.clipboardData;
@@ -78,24 +78,21 @@ export default class ImageEnlargePlugin extends Plugin {
 
     evt.preventDefault();
     evt.stopPropagation();
-    // Insert the plain-text (original markdown) version instead. Prefer the
-    // Editor API for clean CM6 undo integration; fall back to execCommand.
+    // Insert the plain-text (original markdown) version instead.
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (view) {
       view.editor.replaceSelection(text);
-    } else {
-      document.execCommand('insertText', false, text);
     }
   };
 
   private handleCopy = (evt: ClipboardEvent) => {
     if (!this.settings.autoEmbedOnCopy) return;
 
-    const target = evt.target as HTMLElement | null;
+    const target = getEventTargetElement(evt);
     // Only intercept copies originating from a markdown leaf
     if (!target || !target.closest(`.workspace-leaf-content[data-type='markdown']`)) return;
 
-    const selection = window.getSelection();
+    const selection = target.win.getSelection();
     const text = selection?.toString();
     if (!text) return;
 
@@ -104,17 +101,16 @@ export default class ImageEnlargePlugin extends Plugin {
     // We will handle this copy: prevent default and write asynchronously.
     evt.preventDefault();
     evt.stopPropagation();
-    void this.writeRichClipboard(text);
+    void this.writeRichClipboard(text, target.doc);
   };
 
   async onload() {
     await this.loadSettings();
-    document.body.classList.add(BODY_CLASS);
 
     // capture: true — Obsidian/CM6 の stopPropagation より先に発火
-    this.registerDomEvent(document, 'click', this.handleImageClick, true);
-    this.registerDomEvent(document, 'copy', this.handleCopy, true);
-    this.registerDomEvent(document, 'paste', this.handlePaste, true);
+    this.registerDomEvent(activeDocument, 'click', this.handleImageClick, true);
+    this.registerDomEvent(activeDocument, 'copy', this.handleCopy, true);
+    this.registerDomEvent(activeDocument, 'paste', this.handlePaste, true);
 
     this.addCommand({
       id: 'copy-as-html-with-images',
@@ -128,24 +124,24 @@ export default class ImageEnlargePlugin extends Plugin {
   }
 
   onunload() {
-    document.body.classList.remove(BODY_CLASS);
     this.closeOverlay();
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const loaded = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, isSettingsObject(loaded) ? loaded : {});
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
   }
 
-  private openOverlay(src: string) {
+  private openOverlay(src: string, doc: Document = activeDocument) {
     if (this.overlayEl) return;
 
-    const { overlay, imgView, copyBtn, downloadBtn, copyPathBtn } = this.buildOverlayDom(src);
+    const { overlay, imgView, copyBtn, downloadBtn, copyPathBtn } = this.buildOverlayDom(src, doc);
     this.overlayEl = overlay;
-    document.body.appendChild(overlay);
+    doc.body.appendChild(overlay);
     this.fitImageWhenReady(imgView);
 
     const controller = new AbortController();
@@ -157,19 +153,19 @@ export default class ImageEnlargePlugin extends Plugin {
     this.registerOverlayKeymap(imgView, src);
   }
 
-  private buildOverlayDom(src: string) {
-    const overlay = document.createElement('div');
+  private buildOverlayDom(src: string, doc: Document) {
+    const overlay = doc.createElement('div');
     overlay.addClass('image-workflow-overlay');
 
-    const imgView = document.createElement('img');
+    const imgView = doc.createElement('img');
     imgView.addClass('image-workflow-view');
     imgView.src = src;
 
-    const btnGroup = document.createElement('div');
+    const btnGroup = doc.createElement('div');
     btnGroup.addClass('image-workflow-btn-group');
 
     const make = (label: string) => {
-      const btn = document.createElement('button');
+      const btn = doc.createElement('button');
       btn.addClass('image-workflow-btn');
       btn.textContent = label;
       btnGroup.appendChild(btn);
@@ -206,9 +202,11 @@ export default class ImageEnlargePlugin extends Plugin {
       const rect = imgView.getBoundingClientRect();
       const offsetX = e.clientX - rect.left;
       const offsetY = e.clientY - rect.top;
-      if (this.rafId !== null) cancelAnimationFrame(this.rafId);
-      this.rafId = requestAnimationFrame(() => {
+      if (this.rafId !== null && this.rafWin) this.rafWin.cancelAnimationFrame(this.rafId);
+      this.rafWin = imgView.win;
+      this.rafId = imgView.win.requestAnimationFrame(() => {
         this.rafId = null;
+        this.rafWin = null;
         this.zoom(ratio, { offsetX, offsetY });
         this.applyTransform(imgView);
       });
@@ -230,7 +228,7 @@ export default class ImageEnlargePlugin extends Plugin {
     }, { signal });
     downloadBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.downloadImage(src);
+      void this.downloadImage(src);
     }, { signal });
     copyPathBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -243,14 +241,14 @@ export default class ImageEnlargePlugin extends Plugin {
     scope.register(null, 'Escape', () => { this.closeOverlay(); return false; });
     scope.register(['Mod'], 'c', () => { this.copyImageToClipboard(imgView); return false; });
     scope.register(['Mod', 'Shift'], 'c', () => { this.copyImagePath(src); return false; });
-    scope.register(['Mod'], 's', () => { this.downloadImage(src); return false; });
+    scope.register(['Mod'], 's', () => { void this.downloadImage(src); return false; });
     this.overlayScope = scope;
     this.app.keymap.pushScope(scope);
   }
 
   private calculateFitSize(imgView: HTMLImageElement) {
-    const winW = document.documentElement.clientWidth;
-    const winH = document.documentElement.clientHeight - BUTTON_AREA_HEIGHT;
+    const winW = imgView.doc.documentElement.clientWidth;
+    const winH = imgView.doc.documentElement.clientHeight - BUTTON_AREA_HEIGHT;
     const zoomW = winW * ZOOM_FACTOR;
     const zoomH = winH * ZOOM_FACTOR;
 
@@ -316,9 +314,11 @@ export default class ImageEnlargePlugin extends Plugin {
 
   private applyTransform(imgView: HTMLImageElement) {
     const info = this.imgInfo;
-    imgView.style.width = `${info.curWidth}px`;
-    imgView.style.height = `${info.curHeight}px`;
-    imgView.style.transform = `translate(${info.left}px, ${info.top}px)`;
+    imgView.setCssProps({
+      '--image-workflow-view-width': `${info.curWidth}px`,
+      '--image-workflow-view-height': `${info.curHeight}px`,
+      '--image-workflow-view-transform': `translate(${info.left}px, ${info.top}px)`,
+    });
   }
 
   private srcToVaultPath(src: string): string {
@@ -353,20 +353,19 @@ export default class ImageEnlargePlugin extends Plugin {
 
   private async downloadImage(src: string): Promise<void> {
     try {
-      const res = await fetch(src);
-      if (!res.ok) throw new Error('fetch failed');
-      const blob = await res.blob();
+      const blob = await this.readImageBlob(src);
       const url = URL.createObjectURL(blob);
       const path = this.srcToVaultPath(src);
       const filename = path.split('/').pop() || 'image';
-      const a = document.createElement('a');
+      const doc = this.overlayEl?.doc ?? activeDocument;
+      const a = doc.createElement('a');
       a.href = url;
       a.download = filename;
-      document.body.appendChild(a);
+      doc.body.appendChild(a);
       a.click();
       a.remove();
       // Revoke after a tick so the download has time to start
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      doc.defaultView?.setTimeout(() => URL.revokeObjectURL(url), 1000);
       new Notice('Downloaded: ' + filename);
     } catch (err) {
       console.error(err);
@@ -374,15 +373,30 @@ export default class ImageEnlargePlugin extends Plugin {
     }
   }
 
+  private async readImageBlob(src: string): Promise<Blob> {
+    if (/^https?:\/\//i.test(src)) {
+      const res = await requestUrl({ url: src, throw: false });
+      if (res.status >= 400) throw new Error('request failed');
+      const contentType = res.headers['content-type'] ?? 'application/octet-stream';
+      return new Blob([res.arrayBuffer], { type: contentType });
+    }
+
+    const path = this.srcToVaultPath(src);
+    const buf = await this.app.vault.adapter.readBinary(path);
+    const ext = path.split('.').pop()?.toLowerCase() ?? '';
+    const contentType = IMAGE_EXT_MIME[ext] ?? 'application/octet-stream';
+    return new Blob([buf], { type: contentType });
+  }
+
   private copyImageToClipboard(imgView: HTMLImageElement): void {
-    const image = new Image();
+    const image = imgView.doc.createElement('img');
     const isFileUrl = imgView.src.startsWith('file:');
     if (!isFileUrl) {
       image.crossOrigin = 'anonymous';
     }
     image.src = imgView.src;
     image.onload = () => {
-      const canvas = document.createElement('canvas');
+      const canvas = imgView.doc.createElement('canvas');
       let w = image.naturalWidth;
       let h = image.naturalHeight;
       if (w > MAX_CANVAS_DIM || h > MAX_CANVAS_DIM) {
@@ -398,20 +412,8 @@ export default class ImageEnlargePlugin extends Plugin {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(image, 0, 0, w, h);
       try {
-        canvas.toBlob(async (blob) => {
-          canvas.width = 0;
-          if (!blob) {
-            new Notice('Failed to copy image');
-            return;
-          }
-          try {
-            await navigator.clipboard.write([
-              new ClipboardItem({ 'image/png': blob }),
-            ]);
-            new Notice('Image copied');
-          } catch {
-            new Notice('Failed to copy image');
-          }
+        canvas.toBlob((blob) => {
+          void this.writeImageBlobToClipboard(blob, canvas);
         });
       } catch (err) {
         new Notice('Failed to copy image');
@@ -424,9 +426,10 @@ export default class ImageEnlargePlugin extends Plugin {
   }
 
   private closeOverlay() {
-    if (this.rafId !== null) {
-      cancelAnimationFrame(this.rafId);
+    if (this.rafId !== null && this.rafWin) {
+      this.rafWin.cancelAnimationFrame(this.rafId);
       this.rafId = null;
+      this.rafWin = null;
     }
     if (this.overlayAbortController) {
       this.overlayAbortController.abort();
@@ -439,6 +442,22 @@ export default class ImageEnlargePlugin extends Plugin {
     if (this.overlayEl) {
       this.overlayEl.remove();
       this.overlayEl = null;
+    }
+  }
+
+  private async writeImageBlobToClipboard(blob: Blob | null, canvas: HTMLCanvasElement): Promise<void> {
+    canvas.width = 0;
+    if (!blob) {
+      new Notice('Failed to copy image');
+      return;
+    }
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'image/png': blob }),
+      ]);
+      new Notice('Image copied');
+    } catch {
+      new Notice('Failed to copy image');
     }
   }
 
@@ -455,7 +474,7 @@ export default class ImageEnlargePlugin extends Plugin {
     // Pass HTML as a Promise<Blob> so the browser preserves the user-gesture
     // window across our async work (rendering + Mermaid wait + SVG raster can
     // easily exceed 1s).
-    const htmlPromise = this.renderSelectionToHtmlBlob(selection, sourcePath);
+    const htmlPromise = this.renderSelectionToHtmlBlob(selection, sourcePath, activeDocument);
     const textBlob = new Blob([selection], { type: 'text/plain' });
 
     try {
@@ -474,17 +493,17 @@ export default class ImageEnlargePlugin extends Plugin {
     }
   }
 
-  private async renderSelectionToHtmlBlob(selection: string, sourcePath: string): Promise<Blob> {
-    const container = document.createElement('div');
+  private async renderSelectionToHtmlBlob(selection: string, sourcePath: string, doc: Document): Promise<Blob> {
+    const container = doc.createElement('div');
     // opacity:0 (not visibility:hidden) — Mermaid/MathJax post-processors skip
     // elements they consider "invisible". opacity:0 keeps them processable.
-    container.classList.add('markdown-preview-view', 'markdown-rendered');
-    container.style.cssText = 'position:fixed; top:0; left:0; width:800px; ' +
-      'height:auto; opacity:0; pointer-events:none; z-index:-1; overflow:visible';
-    document.body.appendChild(container);
+    container.classList.add('markdown-preview-view', 'markdown-rendered', 'image-workflow-render-buffer');
+    doc.body.appendChild(container);
+    const renderComponent = new Component();
+    renderComponent.load();
 
     try {
-      await MarkdownRenderer.render(this.app, selection, container, sourcePath, this);
+      await MarkdownRenderer.render(this.app, selection, container, sourcePath, renderComponent);
       await waitForAsyncRenders(container);
 
       container.querySelectorAll('.copy-code-button, .frontmatter, .frontmatter-container, .edit-block-button').forEach((el) => el.remove());
@@ -498,15 +517,16 @@ export default class ImageEnlargePlugin extends Plugin {
       const html = buildClipboardHtml(container.innerHTML);
       return new Blob([html], { type: 'text/html' });
     } finally {
+      renderComponent.unload();
       container.remove();
     }
   }
 
   // ---- Rich copy (markdown selection → text/plain + text/html with embedded images) ----
 
-  private async writeRichClipboard(markdown: string): Promise<void> {
+  private async writeRichClipboard(markdown: string, doc: Document): Promise<void> {
     const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
-    const htmlPromise = this.renderSelectionToHtmlBlob(markdown, sourcePath);
+    const htmlPromise = this.renderSelectionToHtmlBlob(markdown, sourcePath, doc);
     const textBlob = new Blob([markdown], { type: 'text/plain' });
 
     try {
@@ -605,6 +625,18 @@ function hasImageRef(text: string): boolean {
   return /!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]+\)/.test(text);
 }
 
+function getEventTargetElement(evt: Event): HTMLElement | null {
+  const target = evt.target;
+  if (!target) return null;
+  const maybeNode = target as EventTarget & { instanceOf?: Node['instanceOf'] };
+  if (typeof maybeNode.instanceOf !== 'function') return null;
+  return maybeNode.instanceOf(HTMLElement) ? target as HTMLElement : null;
+}
+
+function isSettingsObject(value: unknown): value is Partial<ImageWorkflowSettings> {
+  return typeof value === 'object' && value !== null;
+}
+
 function arrayBufferToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
   const CHUNK = 0x8000;
@@ -681,8 +713,8 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
 }
 
 function styleParagraphs(root: HTMLElement): void {
-  root.querySelectorAll('p').forEach((p) => {
-    setStyle(p as HTMLElement, 'margin:0 0 8px; line-height:1.45');
+  root.querySelectorAll<HTMLElement>('p').forEach((p) => {
+    setStyle(p, 'margin:0 0 8px; line-height:1.45');
   });
 }
 
@@ -690,7 +722,7 @@ function preserveSoftLineBreaks(root: HTMLElement): void {
   root.querySelectorAll<HTMLElement>('p, th, td').forEach((block) => {
     if (block.closest('pre, code')) return;
 
-    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    const walker = root.doc.createTreeWalker(block, NodeFilter.SHOW_TEXT);
     const textNodes: Text[] = [];
     let node = walker.nextNode();
     while (node) {
@@ -702,16 +734,16 @@ function preserveSoftLineBreaks(root: HTMLElement): void {
       const text = textNode.nodeValue ?? '';
       if (!text.includes('\n')) return;
 
-      const fragment = document.createDocumentFragment();
+      const fragment = root.doc.createDocumentFragment();
       const parts = text.split(/(\n+)/);
       parts.forEach((part) => {
         if (!part) return;
         if (/^\n+$/.test(part)) {
           for (let i = 0; i < part.length; i++) {
-            fragment.appendChild(document.createElement('br'));
+            fragment.appendChild(root.doc.createElement('br'));
           }
         } else {
-          fragment.appendChild(document.createTextNode(part));
+          fragment.appendChild(root.doc.createTextNode(part));
         }
       });
       textNode.replaceWith(fragment);
@@ -722,20 +754,20 @@ function preserveSoftLineBreaks(root: HTMLElement): void {
 // Code blocks: flatten to a single-cell <table> with plain text, since Docs is
 // unreliable with <pre>/<code> + syntax-highlight <span>s.
 function styleCodeBlocks(root: HTMLElement): void {
-  root.querySelectorAll('pre').forEach((pre) => {
+  root.querySelectorAll<HTMLElement>('pre').forEach((pre) => {
     const codeEl = pre.querySelector('code');
-    const raw = ((codeEl ?? pre) as HTMLElement).innerText
+    const raw = (codeEl ?? pre).innerText
       || (codeEl ?? pre).textContent
       || '';
     const text = raw.replace(/^\n+|\n+$/g, '');
 
-    const table = document.createElement('table');
+    const table = root.doc.createElement('table');
     table.setAttribute('style',
       'border-collapse:collapse; margin:8px 0; width:100%; ' +
       'background:#f6f8fa; border:1px solid #e1e4e8; border-radius:6px'
     );
-    const tr = document.createElement('tr');
-    const td = document.createElement('td');
+    const tr = root.doc.createElement('tr');
+    const td = root.doc.createElement('td');
     td.setAttribute('style',
       'padding:12px 16px; ' +
       'font-family:Menlo, Consolas, "Courier New", monospace; ' +
@@ -745,10 +777,10 @@ function styleCodeBlocks(root: HTMLElement): void {
     );
     const lines = text.split('\n');
     lines.forEach((line, i) => {
-      const span = document.createElement('span');
+      const span = root.doc.createElement('span');
       span.textContent = line.replace(/\t/g, '    ');
       td.appendChild(span);
-      if (i < lines.length - 1) td.appendChild(document.createElement('br'));
+      if (i < lines.length - 1) td.appendChild(root.doc.createElement('br'));
     });
     tr.appendChild(td);
     table.appendChild(tr);
@@ -758,9 +790,9 @@ function styleCodeBlocks(root: HTMLElement): void {
 
 // Inline code: Docs strips <code>, so wrap in <span>.
 function styleInlineCode(root: HTMLElement): void {
-  root.querySelectorAll('code').forEach((code) => {
+  root.querySelectorAll<HTMLElement>('code').forEach((code) => {
     if (code.closest('pre')) return;
-    const span = document.createElement('span');
+    const span = root.doc.createElement('span');
     while (code.firstChild) span.appendChild(code.firstChild);
     span.setAttribute('style',
       'background:#f6f8fa; padding:2px 6px; border-radius:4px; ' +
@@ -771,14 +803,14 @@ function styleInlineCode(root: HTMLElement): void {
 }
 
 function styleLists(root: HTMLElement): void {
-  root.querySelectorAll('ul, ol').forEach((list) => {
-    setStyle(list as HTMLElement, 'margin:4px 0; padding-left:28px');
+  root.querySelectorAll<HTMLElement>('ul, ol').forEach((list) => {
+    setStyle(list, 'margin:4px 0; padding-left:28px');
   });
-  root.querySelectorAll('ul ul, ol ol, ul ol, ol ul').forEach((list) => {
-    setStyle(list as HTMLElement, 'margin:2px 0; padding-left:28px');
+  root.querySelectorAll<HTMLElement>('ul ul, ol ol, ul ol, ol ul').forEach((list) => {
+    setStyle(list, 'margin:2px 0; padding-left:28px');
   });
-  root.querySelectorAll('li').forEach((li) => {
-    setStyle(li as HTMLElement, 'margin:2px 0');
+  root.querySelectorAll<HTMLElement>('li').forEach((li) => {
+    setStyle(li, 'margin:2px 0');
   });
 }
 
@@ -792,15 +824,15 @@ function styleFootnotes(root: HTMLElement): void {
 }
 
 function styleHighlights(root: HTMLElement): void {
-  root.querySelectorAll('mark').forEach((mk) => {
-    setStyle(mk as HTMLElement, 'background:#fff59d; padding:0 2px');
+  root.querySelectorAll<HTMLElement>('mark').forEach((mk) => {
+    setStyle(mk, 'background:#fff59d; padding:0 2px');
   });
 }
 
 function styleBlockquotes(root: HTMLElement): void {
-  root.querySelectorAll('blockquote').forEach((bq) => {
-    if ((bq as HTMLElement).classList.contains('callout')) return;
-    setStyle(bq as HTMLElement,
+  root.querySelectorAll<HTMLElement>('blockquote').forEach((bq) => {
+    if (bq.classList.contains('callout')) return;
+    setStyle(bq,
       'border-left:4px solid #dfe2e5; margin:8px 0; padding:4px 12px; ' +
       'color:#586069; background:#fafbfc'
     );
@@ -823,19 +855,19 @@ function styleCallouts(root: HTMLElement): void {
 }
 
 function styleTables(root: HTMLElement): void {
-  root.querySelectorAll('table').forEach((tbl) => {
-    setStyle(tbl as HTMLElement,
+  root.querySelectorAll<HTMLElement>('table').forEach((tbl) => {
+    setStyle(tbl,
       'border-collapse:collapse; margin:8px 0; border:1px solid #d0d7de; ' +
       'width:auto; max-width:100%; table-layout:auto'
     );
   });
-  root.querySelectorAll('th, td').forEach((cell) => {
-    setStyle(cell as HTMLElement,
+  root.querySelectorAll<HTMLElement>('th, td').forEach((cell) => {
+    setStyle(cell,
       'border:1px solid #d0d7de; padding:6px 12px; vertical-align:top; line-height:1.35'
     );
   });
-  root.querySelectorAll('th').forEach((th) => {
-    setStyle(th as HTMLElement, 'background:#f6f8fa; font-weight:600');
+  root.querySelectorAll<HTMLElement>('th').forEach((th) => {
+    setStyle(th, 'background:#f6f8fa; font-weight:600');
   });
 }
 
@@ -859,23 +891,23 @@ function styleImages(root: HTMLElement): void {
 }
 
 function styleHorizontalRules(root: HTMLElement): void {
-  root.querySelectorAll('hr').forEach((hr) => {
-    setStyle(hr as HTMLElement, 'border:0; border-top:1px solid #d0d7de; margin:16px 0');
+  root.querySelectorAll<HTMLElement>('hr').forEach((hr) => {
+    setStyle(hr, 'border:0; border-top:1px solid #d0d7de; margin:16px 0');
   });
 }
 
 const HEADING_SIZE: Record<string, string> = { H1: '1.8em', H2: '1.5em', H3: '1.25em', H4: '1.1em', H5: '1em', H6: '0.9em' };
 
 function styleHeadings(root: HTMLElement): void {
-  root.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((h) => {
+  root.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6').forEach((h) => {
     const size = HEADING_SIZE[h.tagName] ?? '1em';
-    setStyle(h as HTMLElement, `font-weight:700; margin:0.6em 0 0.3em; font-size:${size}`);
+    setStyle(h, `font-weight:700; margin:0.6em 0 0.3em; font-size:${size}`);
   });
 }
 
 function replaceTaskCheckboxes(root: HTMLElement): void {
   root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb) => {
-    const span = document.createElement('span');
+    const span = root.doc.createElement('span');
     span.textContent = cb.checked ? '☑ ' : '☐ ';
     setStyle(span, 'font-family:monospace');
     cb.replaceWith(span);
@@ -895,7 +927,7 @@ async function waitForAsyncRenders(container: HTMLElement): Promise<void> {
   let lastCount = -1;
   let stableTicks = 0;
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 120));
+    await new Promise((r) => container.win.setTimeout(r, 120));
     const pendingMermaid = container.querySelector('code.language-mermaid, pre.language-mermaid, .mermaid:not([data-processed])');
     const pendingMath = container.querySelector('.math:not(.is-loaded), code.language-math');
     const count = container.querySelectorAll('svg, mjx-container').length;
@@ -915,7 +947,7 @@ async function waitForAsyncRenders(container: HTMLElement): Promise<void> {
 
 async function tryRunMermaid(container: HTMLElement): Promise<void> {
   // Mermaid is exposed on window in Obsidian. Try common APIs.
-  const w = window as unknown as { mermaid?: { run?: (opts?: { nodes?: NodeListOf<Element> | Element[] }) => Promise<unknown>; init?: (config?: unknown, nodes?: NodeListOf<Element> | string) => void } };
+  const w = container.win as Window & { mermaid?: { run?: (opts?: { nodes?: NodeListOf<Element> | Element[] }) => Promise<unknown>; init?: (config?: unknown, nodes?: NodeListOf<Element> | string) => void } };
   const mermaid = w.mermaid;
   if (!mermaid) return;
 
@@ -926,7 +958,7 @@ async function tryRunMermaid(container: HTMLElement): Promise<void> {
   // Convert each block to a <div class="mermaid">code</div> that mermaid.run can consume
   for (const block of codeBlocks) {
     const code = block.tagName === 'PRE' ? block.querySelector('code')?.textContent ?? block.textContent ?? '' : block.textContent ?? '';
-    const wrapper = document.createElement('div');
+    const wrapper = container.doc.createElement('div');
     wrapper.className = 'mermaid';
     wrapper.textContent = code;
     const target = block.tagName === 'PRE' ? block : block.parentElement || block;
@@ -952,8 +984,12 @@ async function convertSvgToImg(root: HTMLElement): Promise<void> {
     const svg = mjx.querySelector('svg');
     if (svg) {
       const isInline = (mjx as HTMLElement).getAttribute('display') !== 'true';
-      const wrapper = document.createElement(isInline ? 'span' : 'div');
-      if (!isInline) wrapper.setAttribute('style', 'text-align:center; margin:8px 0');
+      const wrapper = root.doc.createElement(isInline ? 'span' : 'div');
+      if (!isInline) wrapper.setCssProps({
+        '--image-workflow-math-align': 'center',
+        '--image-workflow-math-margin': '8px 0',
+      });
+      if (!isInline) wrapper.addClass('image-workflow-math-block');
       wrapper.appendChild(svg);
       mjx.replaceWith(wrapper);
     } else {
@@ -996,10 +1032,10 @@ async function rasterizeSvg(svg: SVGSVGElement): Promise<HTMLImageElement | null
   try {
     const dpr = 2; // 2x for crisper paste in Docs / Gmail
     const png = await new Promise<HTMLImageElement | null>((resolve) => {
-      const loader = new Image();
+      const loader = svg.doc.createElement('img');
       loader.onload = () => {
         try {
-          const canvas = document.createElement('canvas');
+          const canvas = svg.doc.createElement('canvas');
           canvas.width = Math.max(1, Math.round(cssW * dpr));
           canvas.height = Math.max(1, Math.round(cssH * dpr));
           const ctx = canvas.getContext('2d');
@@ -1008,7 +1044,7 @@ async function rasterizeSvg(svg: SVGSVGElement): Promise<HTMLImageElement | null
           ctx.fillRect(0, 0, canvas.width, canvas.height);
           ctx.drawImage(loader, 0, 0, canvas.width, canvas.height);
           const dataUrl = canvas.toDataURL('image/png');
-          const img = document.createElement('img');
+          const img = svg.doc.createElement('img');
           img.src = dataUrl;
           img.width = Math.round(cssW);
           img.height = Math.round(cssH);
@@ -1034,12 +1070,11 @@ async function fetchAsDataUrl(url: string): Promise<string | null> {
   // exfiltrate them via the clipboard payload.
   if (!/^https?:\/\//i.test(url)) return null;
   try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    if (blob.size > MAX_EMBED_BYTES) return null;
-    const buf = await blob.arrayBuffer();
-    const mime = blob.type || 'application/octet-stream';
+    const res = await requestUrl({ url, throw: false });
+    if (res.status >= 400) return null;
+    if (res.arrayBuffer.byteLength > MAX_EMBED_BYTES) return null;
+    const mime = res.headers['content-type'] ?? 'application/octet-stream';
+    const buf = res.arrayBuffer;
     return `data:${mime};base64,${arrayBufferToBase64(buf)}`;
   } catch {
     return null;

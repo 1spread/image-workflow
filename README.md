@@ -57,7 +57,7 @@ While the plugin is awaiting community-plugin review, install with [BRAT](https:
 
 ## Demo
 
-<!-- TODO: add demo gif at assets/demo.gif -->
+A demo GIF will be added after community review assets are finalized.
 
 ## Development
 
