@@ -29,10 +29,14 @@ interface ImgInfo {
 
 interface ImageWorkflowSettings {
   autoEmbedOnCopy: boolean;
+  autoFormatMarkdownOnCopy: boolean;
+  preserveSoftLineBreaks: boolean;
 }
 
 const DEFAULT_SETTINGS: ImageWorkflowSettings = {
   autoEmbedOnCopy: true,
+  autoFormatMarkdownOnCopy: false,
+  preserveSoftLineBreaks: true,
 };
 
 const BODY_CLASS = 'image-workflow-enabled';
@@ -95,7 +99,7 @@ export default class ImageEnlargePlugin extends Plugin {
     const text = selection?.toString();
     if (!text) return;
 
-    if (!hasImageRef(text)) return;
+    if (!this.settings.autoFormatMarkdownOnCopy && !hasImageRef(text)) return;
 
     // We will handle this copy: prevent default and write asynchronously.
     evt.preventDefault();
@@ -484,13 +488,14 @@ export default class ImageEnlargePlugin extends Plugin {
       await waitForAsyncRenders(container);
 
       container.querySelectorAll('.copy-code-button, .frontmatter, .frontmatter-container, .edit-block-button').forEach((el) => el.remove());
+      if (this.settings.preserveSoftLineBreaks) preserveSoftLineBreaks(container);
       await convertSvgToImg(container);
       inlineStyleForExternalPaste(container);
-      await embedRemoteImages(container);
+      await this.embedRenderedImages(container, sourcePath);
 
       // innerHTML source is Obsidian's MarkdownRenderer.render output (trusted),
       // serialized into a clipboard payload (not re-injected into DOM).
-      const html = `<div>${container.innerHTML}</div>`;
+      const html = buildClipboardHtml(container.innerHTML);
       return new Blob([html], { type: 'text/html' });
     } finally {
       container.remove();
@@ -501,13 +506,12 @@ export default class ImageEnlargePlugin extends Plugin {
 
   private async writeRichClipboard(markdown: string): Promise<void> {
     const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
-    const html = await this.markdownToHtmlWithEmbeddedImages(markdown, sourcePath);
+    const htmlPromise = this.renderSelectionToHtmlBlob(markdown, sourcePath);
+    const textBlob = new Blob([markdown], { type: 'text/plain' });
 
     try {
-      const htmlBlob = new Blob([html], { type: 'text/html' });
-      const textBlob = new Blob([markdown], { type: 'text/plain' });
       await navigator.clipboard.write([
-        new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob }),
+        new ClipboardItem({ 'text/html': htmlPromise, 'text/plain': textBlob }),
       ]);
     } catch (err) {
       console.error('Rich clipboard write failed', err);
@@ -519,54 +523,50 @@ export default class ImageEnlargePlugin extends Plugin {
     }
   }
 
-  private async markdownToHtmlWithEmbeddedImages(markdown: string, sourcePath: string): Promise<string> {
-    // Collect all image refs first, resolve to data URLs in parallel
-    const refs: Array<{ raw: string; src: string; alt: string }> = [];
-    const collect = (raw: string, src: string, alt: string) => {
-      refs.push({ raw, src, alt });
-    };
+  private async embedRenderedImages(root: HTMLElement, sourcePath: string): Promise<void> {
+    const imgs = Array.from(root.querySelectorAll('img'));
+    await Promise.all(imgs.map(async (img) => {
+      const src = img.getAttribute('src');
+      if (!src || src.startsWith('data:')) return;
 
-    // Pattern: ![[path|alt]] or ![[path]]
-    markdown.replace(/!\[\[([^\]]+)\]\]/g, (raw, inner: string) => {
-      const [linkpath, alt = ''] = inner.split('|');
-      collect(raw, linkpath.trim(), alt.trim());
-      return raw;
-    });
-    // Pattern: ![alt](url)
-    markdown.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (raw, alt: string, src: string) => {
-      collect(raw, src.trim(), alt);
-      return raw;
-    });
-
-    const resolved = new Map<string, string>(); // raw → final src (data URL or original)
-    await Promise.all(refs.map(async ({ raw, src, alt }) => {
-      const finalSrc = await this.resolveImageSrc(src, sourcePath);
-      resolved.set(raw, finalSrc ?? src);
-    }));
-
-    // Render: split into lines, replace image refs with <img>, escape rest
-    const lines = markdown.split('\n');
-    const htmlLines = lines.map((line) => {
-      // Find all image-ref matches and rebuild line
-      const parts: string[] = [];
-      let cursor = 0;
-      const combined = /!\[\[([^\]]+)\]\]|!\[([^\]]*)\]\(([^)]+)\)/g;
-      let m: RegExpExecArray | null;
-      while ((m = combined.exec(line)) !== null) {
-        const before = line.slice(cursor, m.index);
-        if (before) parts.push(escapeHtml(before));
-        const raw = m[0];
-        const alt = (m[2] ?? m[1]?.split('|')[1] ?? '').trim();
-        const finalSrc = resolved.get(raw) ?? '';
-        parts.push(`<img src="${escapeAttr(finalSrc)}" alt="${escapeAttr(alt)}">`);
-        cursor = m.index + raw.length;
+      const embedSrc = this.getRenderedImageEmbedSrc(img, sourcePath);
+      const dataUrl = await this.resolveImageSrc(embedSrc, sourcePath);
+      if (dataUrl) {
+        img.setAttribute('src', dataUrl);
+        img.removeAttribute('srcset');
       }
-      const rest = line.slice(cursor);
-      if (rest) parts.push(escapeHtml(rest));
-      return parts.join('');
-    });
+    }));
+  }
 
-    return `<div>${htmlLines.join('<br>')}</div>`;
+  private getRenderedImageEmbedSrc(img: HTMLImageElement, sourcePath: string): string {
+    const internalEmbed = img.closest<HTMLElement>('.internal-embed[src]');
+    const internalSrc = internalEmbed?.getAttribute('src')?.trim();
+    if (internalSrc) return internalSrc;
+
+    const rawSrc = img.getAttribute('src') ?? '';
+    if (/^https?:\/\//i.test(rawSrc)) return rawSrc;
+
+    const alt = img.getAttribute('alt')?.trim();
+    if (alt && this.app.metadataCache.getFirstLinkpathDest(alt, sourcePath)) return alt;
+
+    return this.renderedUrlToVaultPath(rawSrc) ?? rawSrc;
+  }
+
+  private renderedUrlToVaultPath(src: string): string | null {
+    if (!/^(app|file):\/\//i.test(src)) return null;
+    if (!(this.app.vault.adapter instanceof FileSystemAdapter)) return null;
+
+    try {
+      const decodedPath = decodeURIComponent(new URL(src).pathname);
+      const vaultBasePath = this.app.vault.adapter.getBasePath();
+      if (!decodedPath.includes(vaultBasePath)) return null;
+
+      let path = decodedPath.substring(decodedPath.indexOf(vaultBasePath) + vaultBasePath.length);
+      if (path.startsWith('/')) path = path.substring(1);
+      return path || null;
+    } catch {
+      return null;
+    }
   }
 
   private async resolveImageSrc(src: string, sourcePath: string): Promise<string | null> {
@@ -603,21 +603,6 @@ export default class ImageEnlargePlugin extends Plugin {
 
 function hasImageRef(text: string): boolean {
   return /!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]+\)/.test(text);
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function escapeAttr(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }
 
 function arrayBufferToBase64(buf: ArrayBuffer): string {
@@ -666,7 +651,21 @@ function setStyle(el: HTMLElement, css: string): void {
   el.setAttribute('style', existing ? `${existing}; ${css}` : css);
 }
 
+function buildClipboardHtml(fragmentHtml: string): string {
+  const fragment =
+    '<div style="font-family:Arial, sans-serif; font-size:11pt; line-height:1.45; color:#202124">' +
+    fragmentHtml +
+    '</div>';
+
+  return '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>' +
+    '<!--StartFragment-->' +
+    fragment +
+    '<!--EndFragment-->' +
+    '</body></html>';
+}
+
 function inlineStyleForExternalPaste(root: HTMLElement): void {
+  styleParagraphs(root);
   styleCodeBlocks(root);
   styleInlineCode(root);
   styleLists(root);
@@ -675,9 +674,49 @@ function inlineStyleForExternalPaste(root: HTMLElement): void {
   styleBlockquotes(root);
   styleCallouts(root);
   styleTables(root);
+  styleImages(root);
   styleHorizontalRules(root);
   styleHeadings(root);
   replaceTaskCheckboxes(root);
+}
+
+function styleParagraphs(root: HTMLElement): void {
+  root.querySelectorAll('p').forEach((p) => {
+    setStyle(p as HTMLElement, 'margin:0 0 8px; line-height:1.45');
+  });
+}
+
+function preserveSoftLineBreaks(root: HTMLElement): void {
+  root.querySelectorAll<HTMLElement>('p, th, td').forEach((block) => {
+    if (block.closest('pre, code')) return;
+
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    let node = walker.nextNode();
+    while (node) {
+      textNodes.push(node as Text);
+      node = walker.nextNode();
+    }
+
+    textNodes.forEach((textNode) => {
+      const text = textNode.nodeValue ?? '';
+      if (!text.includes('\n')) return;
+
+      const fragment = document.createDocumentFragment();
+      const parts = text.split(/(\n+)/);
+      parts.forEach((part) => {
+        if (!part) return;
+        if (/^\n+$/.test(part)) {
+          for (let i = 0; i < part.length; i++) {
+            fragment.appendChild(document.createElement('br'));
+          }
+        } else {
+          fragment.appendChild(document.createTextNode(part));
+        }
+      });
+      textNode.replaceWith(fragment);
+    });
+  });
 }
 
 // Code blocks: flatten to a single-cell <table> with plain text, since Docs is
@@ -786,14 +825,36 @@ function styleCallouts(root: HTMLElement): void {
 function styleTables(root: HTMLElement): void {
   root.querySelectorAll('table').forEach((tbl) => {
     setStyle(tbl as HTMLElement,
-      'border-collapse:collapse; margin:8px 0; border:1px solid #d0d7de'
+      'border-collapse:collapse; margin:8px 0; border:1px solid #d0d7de; ' +
+      'width:auto; max-width:100%; table-layout:auto'
     );
   });
   root.querySelectorAll('th, td').forEach((cell) => {
-    setStyle(cell as HTMLElement, 'border:1px solid #d0d7de; padding:6px 12px');
+    setStyle(cell as HTMLElement,
+      'border:1px solid #d0d7de; padding:6px 12px; vertical-align:top; line-height:1.35'
+    );
   });
   root.querySelectorAll('th').forEach((th) => {
     setStyle(th as HTMLElement, 'background:#f6f8fa; font-weight:600');
+  });
+}
+
+function styleImages(root: HTMLElement): void {
+  root.querySelectorAll<HTMLImageElement>('img').forEach((img) => {
+    img.removeAttribute('srcset');
+    img.removeAttribute('loading');
+    img.removeAttribute('decoding');
+    img.removeAttribute('draggable');
+
+    const rect = img.getBoundingClientRect();
+    const width = img.width || Math.round(rect.width) || img.naturalWidth;
+    const height = img.height || Math.round(rect.height) || img.naturalHeight;
+    if (width > 0 && !img.getAttribute('width')) img.setAttribute('width', String(width));
+    if (height > 0 && !img.getAttribute('height')) img.setAttribute('height', String(height));
+
+    setStyle(img,
+      'display:block; max-width:100%; height:auto; margin:8px 0; border:0; outline:none'
+    );
   });
 }
 
@@ -967,19 +1028,6 @@ async function rasterizeSvg(svg: SVGSVGElement): Promise<HTMLImageElement | null
   }
 }
 
-async function embedRemoteImages(root: HTMLElement): Promise<void> {
-  const imgs = Array.from(root.querySelectorAll('img'));
-  await Promise.all(imgs.map(async (img) => {
-    const src = img.getAttribute('src');
-    if (!src || src.startsWith('data:')) return;
-    const dataUrl = await fetchAsDataUrl(src);
-    if (dataUrl) {
-      img.setAttribute('src', dataUrl);
-      img.removeAttribute('srcset');
-    }
-  }));
-}
-
 async function fetchAsDataUrl(url: string): Promise<string | null> {
   // Only follow http(s). Refuse file://, app://, blob:, etc. — in Electron's
   // renderer fetch can read local files, which would let a crafted note
@@ -1026,6 +1074,38 @@ class ImageWorkflowSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.autoEmbedOnCopy)
           .onChange(async (value) => {
             this.plugin.settings.autoEmbedOnCopy = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Format all markdown copies for Google apps')
+      .setDesc(
+        'When enabled, every markdown selection copied with Cmd/Ctrl+C is written ' +
+        'as Google Docs-friendly HTML, even when it does not contain images. Leave ' +
+        'this off if you only want automatic rich copy for selections with image embeds.'
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.autoFormatMarkdownOnCopy)
+          .onChange(async (value) => {
+            this.plugin.settings.autoFormatMarkdownOnCopy = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Preserve line breaks for Google paste')
+      .setDesc(
+        'When enabled, soft line breaks inside paragraphs are kept as visible line ' +
+        'breaks in the HTML copied for Google Docs, Gmail, and other Google editors. ' +
+        'The plain markdown clipboard text is unchanged.'
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.preserveSoftLineBreaks)
+          .onChange(async (value) => {
+            this.plugin.settings.preserveSoftLineBreaks = value;
             await this.plugin.saveSettings();
           })
       );

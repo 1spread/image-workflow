@@ -52,6 +52,8 @@ While the plugin is awaiting community-plugin review, install with [BRAT](https:
 ## Settings
 
 - **Auto-embed images on copy** *(default: on)* — toggles the auto Cmd/Ctrl+C interception. Disable to use Obsidian's standard copy and rely solely on the *Copy selection as HTML with embedded images* command via your own hotkey.
+- **Format all markdown copies for Google apps** *(default: off)* — when enabled, every markdown selection copied with Cmd/Ctrl+C is written as Google Docs-friendly HTML, even if it has no images.
+- **Preserve line breaks for Google paste** *(default: on)* — keeps soft line breaks inside paragraphs as visible line breaks when pasting into Google Docs, Gmail, and other Google editors. Plain markdown clipboard text is unchanged.
 
 ## Demo
 

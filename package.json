@@ -1,6 +1,6 @@
 {
   "name": "image-workflow",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Image-centric workflow for image-heavy notes.",
   "main": "main.js",
   "scripts": {
