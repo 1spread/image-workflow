@@ -11,7 +11,7 @@ Resolve the actionable Obsidian review findings reported for `1.2.3`, publish a 
 - [x] Apply source, CSS, README, and dependency fixes.
 - [x] Update version metadata to `1.2.4`.
 - [x] Run local verification and static scans.
-- [ ] Commit, push, tag, and verify the `1.2.4` release.
+- [x] Commit, push, tag, and verify the `1.2.4` release.
 
 ## Notes
 
@@ -28,3 +28,14 @@ Resolve the actionable Obsidian review findings reported for `1.2.3`, publish a 
 - `gh auth status -h github.com` shows active account `1spread`.
 - Static scans no longer find `execCommand`, `fetch(`, `instanceof HTMLImageElement`, global `document.`/`window.`, direct `.style.`/`style.cssText`, or README placeholder text.
 - Remaining `setAttribute('style')` calls are limited to serialized clipboard HTML formatting for external paste targets.
+- Committed source fixes as `dd67a89`.
+- Pushed `main` to `origin`.
+- Pushed tag `1.2.4`.
+- GitHub Actions release run `27145581842` passed.
+- GitHub Release `1.2.4` is published with `main.js`, `manifest.json`, and `styles.css`.
+- Downloaded release asset SHA-256 values match the release API digests.
+- `gh attestation download` found trusted metadata bundles for all three release assets.
+
+## Attestation Note
+
+`gh attestation verify` could not complete in this local environment because the CLI failed to initialize a Sigstore verifier. The release workflow did run the attestation step successfully, and `gh attestation download` returned bundles for `main.js`, `styles.css`, and `manifest.json`.
